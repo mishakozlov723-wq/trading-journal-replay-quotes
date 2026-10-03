@@ -118,6 +118,29 @@ test('missing current-month H1 is recovered only when M1 matches archived and na
   assert.equal(recovered.meta.instruments.GBPUSD.h1.n, 3);
 });
 
+test('failed H1 endpoint can recover new hours while excluding zero-volume weekend hours', async t => {
+  const { out } = await seed(t);
+  const base = provider();
+  const result = await updateQuotes({ ...common, out, rates: async options => {
+    if (options.timeframe === 'h1') throw new Error('Request failed with status 429');
+    if (options.timeframe === 'm1') return [oldH1, candle(stamp('2014-01-01T00:00:00')),
+      { ...candle(stamp('2014-01-01T01:00:00')), volume: 0 }].filter(row => row.timestamp >= +options.dates.from && row.timestamp < +options.dates.to);
+    return base(options);
+  } });
+  assert.equal(result.meta.instruments.GER40.h1.n, 2);
+});
+
+test('minute recovery preserves archived close rounding and rejects inconsistent ranges', async t => {
+  const { out, buffers } = await seed(t);
+  const base = provider();
+  await assert.rejects(updateQuotes({ ...common, out, rates: async options => {
+    if (options.timeframe === 'h1') return [];
+    if (options.timeframe === 'm1') return [{ ...oldH1, high: 1.4 }].filter(row => row.timestamp >= +options.dates.from && row.timestamp < +options.dates.to);
+    return base(options);
+  } }), /recovery does not match/);
+  assert.deepEqual(await fs.readFile(path.join(out, 'meta.json')), buffers.get('meta.json'));
+});
+
 test('weekend/no new candles skips publication and preserves generated timestamp', async t => {
   const { out, buffers } = await seed(t, { checksums: true });
   const result = await updateQuotes({ ...common, out, rates: provider({ append: false }) });
