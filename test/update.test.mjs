@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { INSTRUMENTS, writeBars, readBars, sha256, summary, mergeBars } from '../tools/data.mjs';
-import { updateQuotes } from '../tools/update.mjs';
+import { updateQuotes, hourlyFromMinutes } from '../tools/update.mjs';
 
 const stamp = value => Date.parse(value + 'Z');
 const candle = timestamp => ({ timestamp, open: 1, high: 1.2, low: 0.8, close: 1.1 });
@@ -88,8 +88,34 @@ test('failure of a later instrument leaves every local file byte-for-byte unchan
 
 test('empty/partial overlap fails rather than replacing established history', async t => {
   const { out, buffers } = await seed(t);
-  await assert.rejects(updateQuotes({ ...common, out, rates: provider({ incomplete: true }) }), /incomplete overlap/);
+  await assert.rejects(updateQuotes({ ...common, out, rates: provider({ incomplete: true }) }), /recovery does not match/);
   assert.deepEqual(await fs.readFile(path.join(out, 'meta.json')), buffers.get('meta.json'));
+});
+
+test('M1 recovery aggregates UTC OHLC and rejects unordered data', () => {
+  const start = stamp('2014-01-01T00:00:00');
+  const rows = [candle(start), { timestamp: start + 60000, open: 1.1, high: 1.4, low: 0.9, close: 1.3 }];
+  assert.deepEqual(hourlyFromMinutes(rows, 1000), [{ timestamp: start, open: 1, high: 1.4, low: 0.8, close: 1.3 }]);
+  assert.throws(() => hourlyFromMinutes(rows.reverse(), 1000), /Unsorted/);
+});
+
+test('missing current-month H1 is recovered only when M1 matches archived and native overlap', async t => {
+  const { out } = await seed(t);
+  // Add a known January hour; native endpoint returns only December.
+  const known = candle(stamp('2014-01-01T00:00:00'));
+  const meta = JSON.parse(await fs.readFile(path.join(out, 'meta.json')));
+  for (const [asset, cfg] of Object.entries(INSTRUMENTS)) {
+    await fs.writeFile(path.join(out, asset.toLowerCase() + '_h1.bin'), writeBars([oldH1, known], cfg.scale, 3600));
+    meta.instruments[asset].h1 = summary([oldH1, known]);
+  }
+  await fs.writeFile(path.join(out, 'meta.json'), JSON.stringify(meta));
+  const base = provider();
+  const recovered = await updateQuotes({ ...common, out, rates: async options => {
+    if (options.timeframe === 'h1') return [oldH1].filter(row => row.timestamp >= +options.dates.from && row.timestamp < +options.dates.to);
+    if (options.timeframe === 'm1') return [oldH1, known, candle(known.timestamp + 3600000)].filter(row => row.timestamp >= +options.dates.from && row.timestamp < +options.dates.to);
+    return base(options);
+  } });
+  assert.equal(recovered.meta.instruments.GBPUSD.h1.n, 3);
 });
 
 test('weekend/no new candles skips publication and preserves generated timestamp', async t => {
