@@ -85,7 +85,9 @@ export async function updateQuotes({
         if (!Array.isArray(chunk)) throw new Error('Invalid provider response');
         downloaded.push(...chunk.filter(row => row.timestamp >= day && row.timestamp < Math.min(day + DAY, cutoff)));
       }
-      const merged = mergeBars(existing, downloaded, { scale: cfg.scale, interval, from, to: cutoff });
+      let merged;
+      try { merged = mergeBars(existing, downloaded, { scale: cfg.scale, interval, from, to: cutoff }); }
+      catch (error) { throw new Error(asset + ' ' + timeframe + ': ' + error.message, { cause: error }); }
       const partitions = new Map();
       for (const row of merged) {
         const name = timeframe === 'h1' ? prefix + '_h1.bin' : prefix + '_m5_' + new Date(row.timestamp).getUTCFullYear() + '.bin';

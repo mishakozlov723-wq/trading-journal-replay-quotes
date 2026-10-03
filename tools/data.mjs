@@ -81,7 +81,9 @@ export function mergeBars(existing, downloaded, { scale, interval, from, to }) {
   // Including a week before the latest known bar gives every request an overlap.
   for (const row of existing) {
     if (row.timestamp >= from && row.timestamp < to && !byTime.has(row.timestamp)) {
-      throw new Error('Provider returned incomplete overlap; published history is preserved');
+      const missing = existing.filter(row => row.timestamp >= from && row.timestamp < to && !byTime.has(row.timestamp));
+      throw new Error('Provider returned incomplete overlap; published history is preserved. Missing ' + missing.length +
+        ' known bars; first ' + new Date(missing[0].timestamp).toISOString() + '; fresh rows ' + fresh.length);
     }
   }
   for (const row of existing) if (!byTime.has(row.timestamp)) byTime.set(row.timestamp, row);
