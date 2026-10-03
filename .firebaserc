@@ -1,3 +1,14 @@
 {
-  "projects": { "default": "retocker" }
+  "projects": {
+    "default": "retocker"
+  },
+  "targets": {
+    "retocker": {
+      "hosting": {
+        "quotes": [
+          "retocker-replay-quotes"
+        ]
+      }
+    }
+  }
 }

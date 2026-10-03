@@ -1,23 +1,37 @@
 # Replay quotes updater
 
-This repository contains ONLY public Dukascopy BID candles and the updater. It has no journal accounts, trades, user data, or journal UI.
+Private updater for Trading Journal Replay, connected to Firebase project `retocker` (Spark).
 
-The schedule is 03:23 UTC / 06:23 Moscow every day. GitHub may delay or skip a scheduled run under load; `workflow_dispatch` supports a manual retry. Each successful run catches up from the last known candle rather than assuming yesterday was downloaded.
+- Journal: https://retocker.web.app
+- Quotes: https://retocker-replay-quotes.web.app/replay-data/meta.json
+- Repository: https://github.com/mishakozlov723-wq/trading-journal-replay-quotes
+- Workflow: Actions → **Update replay quotes**
+- Schedule: **03:23 UTC / 06:23 Moscow every day**, processing completed UTC days.
 
-Before use:
+The journal remains a local project. This repository contains only the quote updater, configuration, and tests. Published candles are restored from the quotes site at each run; the 82 MiB starting archive is not committed to GitHub. Journal accounts, trades and UI are not uploaded here.
 
-1. Create and seed a separate Firebase Hosting site in project `retocker`. Never use the main journal site.
-2. Add repository variable `FIREBASE_QUOTES_SITE` with that new site ID.
-3. Add repository secret `FIREBASE_SERVICE_ACCOUNT_JSON` with a dedicated deployment service account JSON. For this live static-only deployment use Firebase Hosting Admin and API Keys Viewer; Auth Admin (preview-domain changes) and Cloud Run Viewer (server rewrites) are not needed here. Hosting Admin applies to the project's Hosting resources, including the main site, even though this workflow explicitly targets only the quotes site. Keep the key out of the repository and chat. Firebase's official setup guidance: https://github.com/FirebaseExtended/action-hosting-deploy/blob/main/docs/service-account.md
-4. Put this folder at the ROOT of a private GitHub repository, including `.github`, `package-lock.json`, and the initial `public/replay-data` files. Select its default branch when running the action.
-5. Run `Update replay quotes` manually and check its result before relying on the schedule.
+The dedicated Hosting site, repository variable `FIREBASE_QUOTES_SITE=retocker-replay-quotes`, and `FIREBASE_SERVICE_ACCOUNT_JSON` secret are configured. The deployment account has Firebase Hosting Admin and API Keys Viewer. Hosting Admin applies to all Hosting sites in the project; the workflow targets only `hosting:quotes`. Its private key is held in GitHub Secret, never in the repository or distributable ZIP. The unused extra key was deleted. The working key expires October 3, 2036.
 
-`npm ci` then `npm test` runs the updater tests. `npm run update` without `REPLAY_SOURCE_URL` updates local seed files; with `REPLAY_SOURCE_URL=https://YOUR-SITE.web.app/replay-data/` it restores the published snapshot before updating. The CI workflow always uses the published snapshot, so stale Git files cannot roll back newer candles.
+## Operation
 
-The updater preserves the original binary format, H1 history and yearly M5 files, requests a 7-day overlap, and downloads only completed UTC days. A missing known overlapping candle, failed network request, invalid new OHLC, corrupted source file or checksum mismatch stops the entire update. Existing history is never replaced with an empty response. No new candles/corrections means no Firebase release. The first run also adds a SHA-256 manifest.
+For a manual retry, select **Run workflow → mode: update → Run workflow**. Inspect the green/red result and logs. GitHub may delay a scheduled run. After an outage, the updater catches up from the last published candles.
 
-The archive contains legacy OHLC inconsistencies of up to 2 ticks in EURUSD/GBPUSD for October 2024. These exact old values are retained; new provider candles have strict OHLC validation.
+**Bootstrap** is only for initial disaster recovery from the journal's bundled archive. It preserves its original generation timestamp and adds checksums without requesting new candles. Do not select bootstrap for routine updates: it can restore an older snapshot.
 
-The starting snapshot is approximately 82 MiB. This simple workflow downloads the complete published snapshot once a day (roughly 2.5 GiB per month). This traffic and retained releases share the Firebase Hosting quota with the journal. Monitor Usage and set a modest release retention limit ONLY for the quotes site. Do not assume unlimited free resources. Firebase quota reference: https://firebase.google.com/docs/hosting/usage-quotas-pricing
+The updater preserves the H1 and yearly M5 binary format, requests a 7-day overlap, validates SHA-256, timestamps and OHLC, and stages all four assets before publication. Missing overlap, corrupted files, inconsistent recovery or network failures stop publication and leave the live archive intact. No new candles or corrections means no release. H1 monthly buckets are fetched once; HTTP failures are explicitly retried. If H1 is unavailable, gaps can be recovered from the same provider's M1 candles after validation against archived hours (at most two ticks of endpoint rounding) and native H1 high/low overlap. Existing archived/native H1 takes precedence; only new missing hours use minute aggregation. Zero-volume hours are excluded. Legacy October 2024 OHLC inconsistencies of up to two ticks are preserved; new prices are validated strictly.
 
-No production Firebase deployment or GitHub repository has been created while preparing this package. Fetching samples from October 2024 worked for all four assets; a sample request for October 1, 2026 returned zero rows. Current provider availability and a real scheduled deployment remain unverified.
+Replay checks metadata when entering the lobby, reloads changed data and verifies checksums. An active session continues with its loaded data. Return to period selection to see new dates.
+
+## Local development
+
+```powershell
+npm ci
+npm test
+node tools/audit.mjs
+```
+
+`REPLAY_SOURCE_URL=https://retocker-replay-quotes.web.app/replay-data/` restores the published snapshot. Without that variable, `npm run update` operates on local seed files. Never manually deploy stale seed files over production. Configure the dedicated site with `node tools/configure.mjs retocker-replay-quotes retocker`.
+
+The initial archive is about 82 MiB; daily restoration uses roughly 2.5 GiB/month plus visitor traffic. Hosting quotas are shared with the journal. The quotes site retains ten releases. Monitor Firebase Hosting Usage and GitHub Actions usage. The tariff was not upgraded.
+
+References: [Firebase Hosting quotas](https://firebase.google.com/docs/hosting/usage-quotas-pricing), [scheduled Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
