@@ -1,10 +1,28 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INSTRUMENTS, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles } from './data.mjs';
+import { INSTRUMENTS, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, validateBar } from './data.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+export function hourlyFromMinutes(minutes, scale) {
+  const hours = new Map();
+  let previous = -Infinity;
+  for (const row of minutes) {
+    validateBar(row, scale, 60);
+    if (row.timestamp <= previous) throw new Error('Unsorted/duplicate minute candles');
+    previous = row.timestamp;
+    const timestamp = Math.floor(row.timestamp / 3600000) * 3600000;
+    const hour = hours.get(timestamp);
+    if (!hour) hours.set(timestamp, { timestamp, open: row.open, high: row.high, low: row.low, close: row.close });
+    else { hour.high = Math.max(hour.high, row.high); hour.low = Math.min(hour.low, row.low); hour.close = row.close; }
+  }
+  return [...hours.values()];
+}
+
+const samePrices = (a, b, scale) => ['open', 'high', 'low', 'close']
+  .every(key => Math.round(a[key] * scale) === Math.round(b[key] * scale));
 
 async function retry(fn, label, wait = pause) {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -84,6 +102,39 @@ export async function updateQuotes({
         }), asset + ' ' + timeframe + ' ' + new Date(day).toISOString().slice(0, 10), wait);
         if (!Array.isArray(chunk)) throw new Error('Invalid provider response');
         downloaded.push(...chunk.filter(row => row.timestamp >= day && row.timestamp < Math.min(day + DAY, cutoff)));
+      }
+      // The current-month H1 endpoint can omit days that are available in M1.
+      // Recover from the same BID source only after verifying the minute-derived
+      // hours against every archived hour in the missing period and native H1
+      // in the preceding day. An inconsistent or empty recovery still aborts.
+      if (timeframe === 'h1') {
+        const native = new Map(downloaded.map(row => [row.timestamp, row]));
+        const missing = existing.filter(row => row.timestamp >= from && row.timestamp < cutoff && !native.has(row.timestamp));
+        if (missing.length) {
+          const recoveryFrom = Math.max(from, Math.floor(missing[0].timestamp / DAY) * DAY - DAY);
+          const minutes = [];
+          for (let day = recoveryFrom; day < cutoff; day += DAY) {
+            const chunk = await retry(() => rates({
+              instrument: cfg.instrument, dates: { from: new Date(day), to: new Date(Math.min(day + DAY, cutoff)) },
+              timeframe: 'm1', format: 'json', priceType: 'bid', useCache: false,
+            }), asset + ' M1 recovery ' + new Date(day).toISOString().slice(0, 10), wait);
+            if (!Array.isArray(chunk)) throw new Error('Invalid minute recovery response');
+            minutes.push(...chunk.filter(row => row.timestamp >= day && row.timestamp < Math.min(day + DAY, cutoff)));
+          }
+          const recovered = hourlyFromMinutes(minutes, cfg.scale);
+          const byTime = new Map(recovered.map(row => [row.timestamp, row]));
+          for (const row of missing) {
+            if (!byTime.has(row.timestamp) || !samePrices(row, byTime.get(row.timestamp), cfg.scale)) {
+              throw new Error(asset + ' H1 recovery does not match archived candle at ' + new Date(row.timestamp).toISOString());
+            }
+          }
+          const nativeOverlap = downloaded.filter(row => row.timestamp >= recoveryFrom && byTime.has(row.timestamp));
+          if (!nativeOverlap.length || nativeOverlap.some(row => !samePrices(row, byTime.get(row.timestamp), cfg.scale))) {
+            throw new Error(asset + ' H1 recovery does not match native hourly overlap');
+          }
+          downloaded.push(...recovered.filter(row => !native.has(row.timestamp)));
+          log(asset, 'H1 recovered from verified M1 candles:', missing.length, 'archived hours matched;', recovered.length, 'hours checked');
+        }
       }
       let merged;
       try { merged = mergeBars(existing, downloaded, { scale: cfg.scale, interval, from, to: cutoff }); }
