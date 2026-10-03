@@ -130,7 +130,7 @@ test('failed H1 endpoint can recover new hours while excluding zero-volume weeke
   assert.equal(result.meta.instruments.GER40.h1.n, 2);
 });
 
-test('minute recovery preserves archived close rounding and rejects inconsistent ranges', async t => {
+test('minute recovery rejects inconsistent ranges and leaves the archive intact', async t => {
   const { out, buffers } = await seed(t);
   const base = provider();
   await assert.rejects(updateQuotes({ ...common, out, rates: async options => {
@@ -139,6 +139,20 @@ test('minute recovery preserves archived close rounding and rejects inconsistent
     return base(options);
   } }), /recovery does not match/);
   assert.deepEqual(await fs.readFile(path.join(out, 'meta.json')), buffers.get('meta.json'));
+});
+
+test('recovery preserves original H1 open/close when minute endpoints differ', async t => {
+  const { out } = await seed(t);
+  const base = provider();
+  await updateQuotes({ ...common, out, rates: async options => {
+    if (options.timeframe === 'h1') return [];
+    if (options.timeframe === 'm1') return [{ ...oldH1, open: 1.001, close: 1.101 }, candle(stamp('2014-01-01T00:00:00'))]
+      .filter(row => row.timestamp >= +options.dates.from && row.timestamp < +options.dates.to);
+    return base(options);
+  } });
+  const rows = readBars(await fs.readFile(path.join(out, 'xauusd_h1.bin')), INSTRUMENTS.XAUUSD.scale, 3600);
+  assert.deepEqual(rows[0], oldH1);
+  assert.equal(rows.length, 2);
 });
 
 test('weekend/no new candles skips publication and preserves generated timestamp', async t => {
