@@ -21,7 +21,9 @@ export function hourlyFromMinutes(minutes, scale) {
   return [...hours.values()];
 }
 
-const samePrices = (a, b, scale) => ['open', 'high', 'low', 'close']
+const samePrices = (a, b, scale, allowance = 0) => ['open', 'high', 'low', 'close']
+  .every(key => Math.abs(Math.round(a[key] * scale) - Math.round(b[key] * scale)) <= allowance);
+const sameRange = (a, b, scale) => ['high', 'low']
   .every(key => Math.round(a[key] * scale) === Math.round(b[key] * scale));
 
 async function retry(fn, label, wait = pause) {
@@ -94,46 +96,67 @@ export async function updateQuotes({
     ]) {
       const from = Math.floor((existing.at(-1).timestamp - 7 * DAY) / DAY) * DAY;
       const downloaded = [];
-      // Daily chunks keep recovery after a long pause bounded and retryable.
-      for (let day = from; day < cutoff; day += DAY) {
-        const chunk = await retry(() => rates({
-          instrument: cfg.instrument, dates: { from: new Date(day), to: new Date(Math.min(day + DAY, cutoff)) },
-          timeframe, format: 'json', priceType: 'bid', useCache: false,
-        }), asset + ' ' + timeframe + ' ' + new Date(day).toISOString().slice(0, 10), wait);
+      let nativeUnavailable = false;
+      // H1 is supplied in monthly buckets: fetch each once, not once per day.
+      // M5 is supplied in daily buckets. Explicit retries make non-200 responses
+      // throw instead of dukascopy-node's default silent empty buffer.
+      for (let day = from; day < cutoff;) {
+        const date = new Date(day);
+        const end = Math.min(timeframe === 'h1' ? Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1) : day + DAY, cutoff);
+        let chunk;
+        try {
+          chunk = await retry(() => rates({
+            instrument: cfg.instrument, dates: { from: new Date(day), to: new Date(end) },
+            timeframe, format: 'json', priceType: 'bid', useCache: false,
+            batchSize: 1, retryCount: 1, pauseBetweenRetriesMs: 15000, failAfterRetryCount: true,
+          }), asset + ' ' + timeframe + ' ' + date.toISOString().slice(0, 10), wait);
+        } catch (error) {
+          if (timeframe !== 'h1') throw error;
+          nativeUnavailable = true;
+          log(asset, 'Native H1 unavailable; checking same-provider M1 recovery:', error.message);
+          chunk = [];
+        }
         if (!Array.isArray(chunk)) throw new Error('Invalid provider response');
-        downloaded.push(...chunk.filter(row => row.timestamp >= day && row.timestamp < Math.min(day + DAY, cutoff)));
+        downloaded.push(...chunk.filter(row => row.timestamp >= day && row.timestamp < end));
+        day = end;
       }
       // The current-month H1 endpoint can omit days that are available in M1.
       // Recover from the same BID source only after verifying the minute-derived
-      // hours against every archived hour in the missing period and native H1
-      // in the preceding day. An inconsistent or empty recovery still aborts.
+      // hours against every archived hour in the missing period (max two ticks
+      // of endpoint rounding) and native H1 high/low in the preceding day.
+      // Existing native/archive H1 always takes precedence over aggregation.
+      // An inconsistent or empty recovery still aborts.
       if (timeframe === 'h1') {
         const native = new Map(downloaded.map(row => [row.timestamp, row]));
         const missing = existing.filter(row => row.timestamp >= from && row.timestamp < cutoff && !native.has(row.timestamp));
-        if (missing.length) {
-          const recoveryFrom = Math.max(from, Math.floor(missing[0].timestamp / DAY) * DAY - DAY);
+        if (missing.length || nativeUnavailable) {
+          const recoveryFrom = Math.max(from, Math.floor((missing[0]?.timestamp ?? existing.at(-1).timestamp) / DAY) * DAY - DAY);
           const minutes = [];
           for (let day = recoveryFrom; day < cutoff; day += DAY) {
             const chunk = await retry(() => rates({
               instrument: cfg.instrument, dates: { from: new Date(day), to: new Date(Math.min(day + DAY, cutoff)) },
-              timeframe: 'm1', format: 'json', priceType: 'bid', useCache: false,
+              timeframe: 'm1', format: 'json', priceType: 'bid', useCache: false, ignoreFlats: false,
+              batchSize: 1, retryCount: 1, pauseBetweenRetriesMs: 15000, failAfterRetryCount: true,
             }), asset + ' M1 recovery ' + new Date(day).toISOString().slice(0, 10), wait);
             if (!Array.isArray(chunk)) throw new Error('Invalid minute recovery response');
             minutes.push(...chunk.filter(row => row.timestamp >= day && row.timestamp < Math.min(day + DAY, cutoff)));
           }
-          const recovered = hourlyFromMinutes(minutes, cfg.scale);
+          const tradedHours = new Set(minutes.filter(row => row.volume === undefined || row.volume > 0)
+            .map(row => Math.floor(row.timestamp / 3600000) * 3600000));
+          const recovered = hourlyFromMinutes(minutes, cfg.scale).filter(row => tradedHours.has(row.timestamp));
           const byTime = new Map(recovered.map(row => [row.timestamp, row]));
           for (const row of missing) {
-            if (!byTime.has(row.timestamp) || !samePrices(row, byTime.get(row.timestamp), cfg.scale)) {
+            if (!byTime.has(row.timestamp) || !samePrices(row, byTime.get(row.timestamp), cfg.scale, 2)) {
               throw new Error(asset + ' H1 recovery does not match archived candle at ' + new Date(row.timestamp).toISOString());
             }
           }
           const nativeOverlap = downloaded.filter(row => row.timestamp >= recoveryFrom && byTime.has(row.timestamp));
-          if (!nativeOverlap.length || nativeOverlap.some(row => !samePrices(row, byTime.get(row.timestamp), cfg.scale))) {
+          if (nativeOverlap.some(row => !sameRange(row, byTime.get(row.timestamp), cfg.scale))) {
             throw new Error(asset + ' H1 recovery does not match native hourly overlap');
           }
-          downloaded.push(...recovered.filter(row => !native.has(row.timestamp)));
-          log(asset, 'H1 recovered from verified M1 candles:', missing.length, 'archived hours matched;', recovered.length, 'hours checked');
+          const archived = new Map(existing.map(row => [row.timestamp, row]));
+          downloaded.push(...recovered.filter(row => !native.has(row.timestamp)).map(row => archived.get(row.timestamp) || row));
+          log(asset, 'H1 recovered from verified M1 candles:', missing.length, 'archived hours preserved;', recovered.length, 'hours checked');
         }
       }
       let merged;
