@@ -1,0 +1,13 @@
+{
+  "name": "trading-journal-replay-quotes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "configure": "node tools/configure.mjs",
+    "update": "node tools/update.mjs"
+  },
+  "dependencies": { "dukascopy-node": "1.50.0" }
+}
