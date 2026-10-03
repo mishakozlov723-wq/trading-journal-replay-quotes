@@ -21,8 +21,6 @@ export function hourlyFromMinutes(minutes, scale) {
   return [...hours.values()];
 }
 
-const samePrices = (a, b, scale, allowance = 0) => ['open', 'high', 'low', 'close']
-  .every(key => Math.abs(Math.round(a[key] * scale) - Math.round(b[key] * scale)) <= allowance);
 const sameRange = (a, b, scale) => ['high', 'low']
   .every(key => Math.round(a[key] * scale) === Math.round(b[key] * scale));
 
@@ -122,8 +120,9 @@ export async function updateQuotes({
       }
       // The current-month H1 endpoint can omit days that are available in M1.
       // Recover from the same BID source only after verifying the minute-derived
-      // hours against every archived hour in the missing period (max two ticks
-      // of endpoint rounding) and native H1 high/low in the preceding day.
+      // high/low against every archived hour in the missing period and native
+      // H1 in the preceding day. Open/close differ between provider resolutions,
+      // so existing archived/native OHLC is always preserved in recovery.
       // Existing native/archive H1 always takes precedence over aggregation.
       // An inconsistent or empty recovery still aborts.
       if (timeframe === 'h1') {
@@ -146,7 +145,7 @@ export async function updateQuotes({
           const recovered = hourlyFromMinutes(minutes, cfg.scale).filter(row => tradedHours.has(row.timestamp));
           const byTime = new Map(recovered.map(row => [row.timestamp, row]));
           for (const row of missing) {
-            if (!byTime.has(row.timestamp) || !samePrices(row, byTime.get(row.timestamp), cfg.scale, 2)) {
+            if (!byTime.has(row.timestamp) || !sameRange(row, byTime.get(row.timestamp), cfg.scale)) {
               throw new Error(asset + ' H1 recovery does not match archived candle at ' + new Date(row.timestamp).toISOString());
             }
           }
