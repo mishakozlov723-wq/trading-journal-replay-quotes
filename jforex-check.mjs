@@ -73,7 +73,7 @@ async function main() {
     for(const file of files) {
       const bytes=await remote(file);
       if(!meta.files?.[file]?.sha256 || sha256(bytes)!==meta.files[file].sha256) throw new Error('Snapshot changed or checksum missing: '+file);
-      existing.push(...readBars(bytes,cfg.scale,interval));
+      for(const bar of readBars(bytes,cfg.scale,interval)) existing.push(bar);
     }
     const rows=parseCandles(await fs.readFile(path.join(out,asset+'_'+tf+'.csv'),'utf8'),cfg.scale,interval);
     const result=compareCandles(existing,rows,from,to,cfg.scale);

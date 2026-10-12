@@ -87,15 +87,24 @@ public final class ReplayHistory implements IStrategy {
                     for(long day=from;day<to;day+=DAY) {
                         System.out.println("Reading "+ASSETS[i]+" "+names[p]+" "+java.time.Instant.ofEpochMilli(day));
                         List<IBar> bars=context.getHistory().getBars(Instrument.fromString(SYMBOLS[i]), periods[p], OfferSide.BID, Filter.WEEKENDS, day, day+DAY-periods[p].getInterval());
+                        // A first history request can return an empty cache while SDK data loads.
+                        // Retry empty days, but retain legitimate closed-market days as empty.
+                        for(int retry=0; bars.isEmpty() && retry<2; retry++) {
+                            Thread.sleep(2000);
+                            bars=context.getHistory().getBars(Instrument.fromString(SYMBOLS[i]), periods[p], OfferSide.BID, Filter.WEEKENDS, day, day+DAY-periods[p].getInterval());
+                        }
+                        int active=0;
                         for(IBar bar:bars) {
                             long t=bar.getTime();
                             if(t<day || t>=day+DAY || t<=previous) throw new IllegalStateException("Unexpected candle order");
                             previous=t;
                             if(bar.getVolume()<=0) continue;
+                            active++;
                             writer.write(t+","+bar.getOpen()+","+bar.getHigh()+","+bar.getLow()+","+bar.getClose()+","+bar.getVolume()+"\n");
                             count++;
                         }
                         writer.flush();
+                        System.out.println("Day bars: "+bars.size()+"; active: "+active);
                     }
                 }
                 if(count==0) throw new IllegalStateException("Empty history");
