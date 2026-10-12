@@ -5,11 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { INSTRUMENTS, writeBars, readBars, sha256, summary } from '../tools/data.mjs';
 import { updateQuotes } from '../tools/update.mjs';
-import { fetchCandles, verifyHours, checkOverlap, oandaHistory, OANDA_INSTRUMENTS, SOURCE_LABEL } from '../oanda-fetch.mjs';
+import { fetchCandles, verifyHours, checkOverlap, checkSeed, oandaHistory, oandaSeed, OANDA_INSTRUMENTS, SOURCE_LABEL } from '../oanda-fetch.mjs';
 
 const H = 3600000, M = 300000, DAY = 86400000;
 const start = Date.parse('2014-01-06T00:00:00Z'); // Monday
-const BASE = { XAUUSD: 1250, EURUSD: 1.36, GBPUSD: 1.64, GER40: 9400 };
+const BASE = { XAUUSD: 1250, EURUSD: 1.36, GBPUSD: 1.64, GER40: 9400, USDJPY: 104.5, XAGUSD: 19.9, USDCAD: 1.06, NZDUSD: 0.82, USDCHF: 0.89 };
 const ASSET_BY_INSTRUMENT = Object.fromEntries(Object.entries(OANDA_INSTRUMENTS).map(([a, i]) => [i, a]));
 
 // Deterministic M5 candles on the price grid; H1 is their exact aggregation.
@@ -48,12 +48,12 @@ function oandaFetch({ offsetTicks = 1, status, calls = [], gerNight = true } = {
   };
 }
 
-async function seed(t, days = 2) {
+async function seed(t, days = 2, only = () => true) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tj-oanda-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const out = path.join(root, 'replay-data'); await fs.mkdir(out);
   const meta = { generated: '2014-01-08T06:00:00.000Z', source: 'Dukascopy BID', instruments: {}, files: {} }, buffers = new Map();
-  for (const [asset, cfg] of Object.entries(INSTRUMENTS)) {
+  for (const [asset, cfg] of Object.entries(INSTRUMENTS).filter(([a, c]) => only(a, c))) {
     const prefix = asset.toLowerCase(), s = series(asset, start, start + days * DAY);
     for (const [name, rows, interval] of [[prefix + '_h1.bin', s.h1, 3600], [prefix + '_m5_2014.bin', s.m5, 300]]) {
       const buffer = writeBars(rows, cfg.scale, interval);
@@ -138,4 +138,42 @@ test('a rejected token or mismatching feed leaves every file byte-for-byte uncha
   await assert.rejects(updateQuotes({ ...common, out, history: oandaHistory({ token, fetchImpl: oandaFetch({ status: 401 }), wait: async () => {}, log: () => {} }) }), /rejected the token/);
   await assert.rejects(updateQuotes({ ...common, out, history: oandaHistory({ token, fetchImpl: oandaFetch({ offsetTicks: 500000 }), wait: async () => {}, log: () => {} }) }), /does not match the archive/);
   for (const [name, buffer] of buffers) assert.deepEqual(await fs.readFile(path.join(out, name)), buffer);
+});
+test('missing tier 2 instruments are seeded with full history; tier 1 archive is untouched', async t => {
+  const { out, buffers } = await seed(t, 2, (a, c) => c.tier === 1);
+  const fetchImpl = oandaFetch({ offsetTicks: 1 }), quiet = { token, fetchImpl, wait: async () => {}, log: () => {} };
+  const report = {};
+  const result = await updateQuotes({ ...common, out, sourceLabel: SOURCE_LABEL, history: oandaHistory(quiet), seed: oandaSeed({ ...quiet, report }) });
+  assert.equal(result.changed, true);
+  for (const [asset, cfg] of Object.entries(INSTRUMENTS)) {
+    const m = result.meta.instruments[asset], prefix = asset.toLowerCase();
+    assert.equal(m.tier, cfg.tier); assert.equal(m.scale, cfg.scale);
+    if (cfg.tier === 1) {
+      const before = readBars(buffers.get(prefix + '_h1.bin'), cfg.scale, 3600), after = readBars(await fs.readFile(path.join(out, prefix + '_h1.bin')), cfg.scale, 3600);
+      assert.deepEqual(after.slice(0, before.length), before);
+      continue;
+    }
+    assert.equal(m.dp, cfg.dp);
+    assert.deepEqual(m.m5Years, [2013, 2014]);
+    assert.equal(m.h1.first * 1000, Date.parse(cfg.h1From + 'T00:00:00Z'));
+    assert.equal(m.m5First * 1000, Date.parse('2013-01-01T00:00:00Z'));
+    assert.ok(m.h1.last * 1000 < start + 3 * DAY);
+    const h1 = readBars(await fs.readFile(path.join(out, prefix + '_h1.bin')), cfg.scale, 3600);
+    assert.equal(h1.length, m.h1.n);
+    assert.equal(result.meta.files[prefix + '_m5_2013.bin'].n, 365 * 288);
+    assert.equal(report[asset + ' m5 seed'].hourMismatch, 0);
+  }
+  // Next night the seeded instruments are ordinary published series.
+  const again = await updateQuotes({ ...common, out, sourceLabel: SOURCE_LABEL, history: oandaHistory(quiet), seed: oandaSeed(quiet) });
+  assert.equal(again.changed, false);
+});
+
+test('seed plausibility rejects long gaps and thin years', () => {
+  const hours = (from, n) => Array.from({ length: n }, (_, i) => ({ timestamp: from + i * H }));
+  const y = Date.parse('2010-01-01T00:00:00Z');
+  assert.equal(checkSeed(hours(y, 3 * 8760), 3600, 'x').maxGapHours, 1);
+  const gap = hours(y, 3 * 8760); gap.splice(4000, 120);
+  assert.throws(() => checkSeed(gap, 3600, 'x'), /gap of 121 hours/);
+  const thin = hours(y, 3 * 8760).filter((b, i) => i < 8760 || i >= 2 * 8760 || i % 3 === 0);
+  assert.throws(() => checkSeed(thin, 3600, 'x', { maxGapHours: 100, minH1PerYear: 5000 }), /only \d+ candles in 2011/);
 });

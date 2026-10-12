@@ -13,11 +13,17 @@ import { updateQuotes } from './tools/update.mjs';
 
 export const PRACTICE_HOST = 'https://api-fxpractice.oanda.com';
 export const SOURCE_LABEL = 'Dukascopy BID archive + OANDA BID daily updates';
-export const OANDA_INSTRUMENTS = { XAUUSD: 'XAU_USD', EURUSD: 'EUR_USD', GBPUSD: 'GBP_USD', GER40: 'DE30_EUR' };
+export const OANDA_INSTRUMENTS = {
+  XAUUSD: 'XAU_USD', EURUSD: 'EUR_USD', GBPUSD: 'GBP_USD', GER40: 'DE30_EUR',
+  USDJPY: 'USD_JPY', XAGUSD: 'XAG_USD', USDCAD: 'USD_CAD', NZDUSD: 'NZD_USD', USDCHF: 'USD_CHF',
+};
 // OANDA trades GER40 (DE30_EUR) with a shorter evening/night session than
 // Dukascopy. Archived hours OANDA does not trade are not counted as missing.
 export const SHORTER_SESSION = new Set(['GER40']);
 export const LIMITS = { coverage: 0.97, medianRelative: 0.002, maxRelative: 0.02, sameDirection: 0.8, hourMismatch: 0.02 };
+// Seeding a new instrument: no gap longer than this (weekends, Christmas, New Year),
+// and every calendar year must be reasonably complete.
+export const SEED_LIMITS = { maxGapHours: 100, minH1PerYear: 5000, minM5PerYear: 60000 };
 const TIMEFRAMES = { h1: ['H1', 3600000], m5: ['M5', 300000] };
 const CHUNK = 4000; // candles per request; OANDA allows at most 5000
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -48,10 +54,13 @@ async function request(url, token, fetchImpl, wait) {
 }
 
 // Completed BID candles in [from, to), sorted, without duplicates.
-export async function fetchCandles({ instrument, timeframe, from, to, token, fetchImpl = fetch, wait = pause, host = PRACTICE_HOST }) {
+export async function fetchCandles({ instrument, timeframe, from, to, token, fetchImpl = fetch, wait = pause, host = PRACTICE_HOST, concurrency = 4 }) {
   const [granularity, ms] = TIMEFRAMES[timeframe];
-  const rows = new Map();
-  for (let start = from; start < to; start += CHUNK * ms) {
+  const rows = new Map(), starts = [];
+  for (let start = from; start < to; start += CHUNK * ms) starts.push(start);
+  let next = 0;
+  const worker = async () => { while (next < starts.length) await chunk(starts[next++]); };
+  async function chunk(start) {
     const end = Math.min(start + CHUNK * ms, to);
     const url = new URL('/v3/instruments/' + instrument + '/candles', host);
     url.search = new URLSearchParams({ granularity, price: 'B', from: iso(start), to: iso(end) }).toString();
@@ -68,6 +77,7 @@ export async function fetchCandles({ instrument, timeframe, from, to, token, fet
       rows.set(timestamp, bar);
     }
   }
+  await Promise.all(Array.from({ length: Math.min(concurrency, starts.length) }, worker));
   return [...rows.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
@@ -155,9 +165,64 @@ export function oandaHistory({ token, fetchImpl = fetch, wait = pause, host = PR
   };
 }
 
+// Plausibility of a freshly seeded series (no archive to compare with).
+export function checkSeed(rows, interval, label, limits = SEED_LIMITS) {
+  if (!rows.length) throw new Error(label + ': OANDA returned no candles');
+  let maxGap = 0, at = rows[0].timestamp;
+  const perYear = {};
+  for (let i = 0; i < rows.length; i++) {
+    const y = new Date(rows[i].timestamp).getUTCFullYear();
+    perYear[y] = (perYear[y] || 0) + 1;
+    if (i && rows[i].timestamp - rows[i - 1].timestamp > maxGap) { maxGap = rows[i].timestamp - rows[i - 1].timestamp; at = rows[i - 1].timestamp; }
+  }
+  const maxGapHours = +(maxGap / 3600000).toFixed(1);
+  if (maxGapHours > limits.maxGapHours) throw new Error(label + ': gap of ' + maxGapHours + ' hours after ' + iso(at));
+  const minimum = interval === 3600 ? limits.minH1PerYear : limits.minM5PerYear;
+  const firstYear = new Date(rows[0].timestamp).getUTCFullYear(), lastYear = new Date(rows.at(-1).timestamp).getUTCFullYear();
+  for (const [year, n] of Object.entries(perYear)) {
+    // The first and the current year are partial.
+    if (+year !== firstYear && +year !== lastYear && n < minimum) throw new Error(label + ': only ' + n + ' candles in ' + year);
+  }
+  return { bars: rows.length, firstUTC: iso(rows[0].timestamp), lastUTC: iso(rows.at(-1).timestamp), maxGapHours };
+}
+
+// Full history for an instrument that is not published yet.
+export function oandaSeed({ token, fetchImpl = fetch, wait = pause, host = PRACTICE_HOST, log = console.log, report = {} }) {
+  const cache = new Map();
+  const candles = (instrument, timeframe, from, to) => {
+    const key = [instrument, timeframe, from, to].join(' ');
+    if (!cache.has(key)) cache.set(key, fetchCandles({ instrument, timeframe, from, to, token, fetchImpl, wait, host }));
+    return cache.get(key);
+  };
+  const ranges = {};
+  return async ({ asset, timeframe, from, to }) => {
+    const instrument = OANDA_INSTRUMENTS[asset], { scale } = INSTRUMENTS[asset];
+    if (!instrument) throw new Error('No OANDA instrument for ' + asset);
+    (ranges[asset] ||= {})[timeframe] = from;
+    const label = asset + ' ' + timeframe + ' seed', interval = timeframe === 'h1' ? 3600 : 300;
+    const rows = await candles(instrument, timeframe, from, to);
+    for (const bar of rows) {
+      try { validateBar(bar, scale, interval); }
+      catch (error) { throw new Error(label + ': invalid OANDA candle at ' + iso(bar.timestamp) + ': ' + error.message); }
+    }
+    const stats = checkSeed(rows, interval, label);
+    // H1 and M5 must describe the same market where both exist.
+    const m5From = timeframe === 'm5' ? from : ranges[asset].m5;
+    let hours = {};
+    if (m5From != null) {
+      const h1 = await candles(instrument, 'h1', ranges[asset].h1 ?? from, to), m5 = await candles(instrument, 'm5', m5From, to);
+      hours = verifyHours(h1.filter(b => b.timestamp >= m5From), m5, scale, asset);
+    }
+    report[label] = { seeded: true, ...stats, ...hours, newBars: rows.length, lastNewUTC: stats.lastUTC };
+    log(label, JSON.stringify(report[label]));
+    return rows;
+  };
+}
+
 function summaryTable(report, dryRun, changed) {
-  const rows = Object.entries(report).map(([k, v]) =>
-    `|${k}|${(v.coverage * 100).toFixed(1)}%|${(v.medianRelative * 100).toFixed(3)}%|${(v.sameDirection * 100).toFixed(1)}%|${v.hourMismatch}|${v.newBars}|${v.lastNewUTC ?? '—'}|`);
+  const rows = Object.entries(report).map(([k, v]) => v.seeded
+    ? `|${k}|new: ${v.firstUTC.slice(0, 10)} → ${v.lastUTC.slice(0, 10)}|max gap ${v.maxGapHours} h|—|${v.hourMismatch ?? '—'}|${v.newBars}|${v.lastNewUTC}|`
+    : `|${k}|${(v.coverage * 100).toFixed(1)}%|${(v.medianRelative * 100).toFixed(3)}%|${(v.sameDirection * 100).toFixed(1)}%|${v.hourMismatch}|${v.newBars}|${v.lastNewUTC ?? '—'}|`);
   return '# OANDA quote update' + (dryRun ? ' (dry run, no publication)' : '') + '\n\n' +
     '|Series|Archive coverage|Median price diff|Same direction|H1/M5 mismatched hours|New bars|Last new UTC|\n|---|---:|---:|---:|---:|---:|---|\n' +
     rows.join('\n') + '\n\nChanged: ' + changed + '\n';
@@ -173,6 +238,7 @@ async function main() {
   const result = await updateQuotes({
     sourceURL: process.env.REPLAY_SOURCE_URL, out, sourceLabel: SOURCE_LABEL,
     history: oandaHistory({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
+    seed: oandaSeed({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
   });
   await fs.mkdir('oanda-check', { recursive: true });
   await fs.writeFile('oanda-check/report.json', JSON.stringify({ dryRun, changed: result.changed, limits: LIMITS, series: report }, null, 2));

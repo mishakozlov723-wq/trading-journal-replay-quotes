@@ -1,11 +1,20 @@
 import { createHash } from 'node:crypto';
 
+// Tier 1: original Dukascopy archive, extended daily from OANDA.
+// Tier 2: full history seeded once from OANDA (H1 from h1From, M5 from M5_FROM),
+// then extended daily like tier 1. Tier 2 has no Dukascopy instrument.
 export const INSTRUMENTS = {
-  XAUUSD: { instrument: 'xauusd', scale: 1000, dp: 2 },
-  EURUSD: { instrument: 'eurusd', scale: 100000, dp: 5 },
-  GBPUSD: { instrument: 'gbpusd', scale: 100000, dp: 5 },
-  GER40: { instrument: 'deuidxeur', scale: 1000, dp: 1 },
+  XAUUSD: { instrument: 'xauusd', scale: 1000, dp: 2, tier: 1 },
+  EURUSD: { instrument: 'eurusd', scale: 100000, dp: 5, tier: 1 },
+  GBPUSD: { instrument: 'gbpusd', scale: 100000, dp: 5, tier: 1 },
+  GER40: { instrument: 'deuidxeur', scale: 1000, dp: 1, tier: 1 },
+  USDJPY: { scale: 1000, dp: 3, tier: 2, h1From: '2005-01-01' },
+  XAGUSD: { scale: 100000, dp: 3, tier: 2, h1From: '2006-03-01' },
+  USDCAD: { scale: 100000, dp: 5, tier: 2, h1From: '2005-01-01' },
+  NZDUSD: { scale: 100000, dp: 5, tier: 2, h1From: '2005-01-01' },
+  USDCHF: { scale: 100000, dp: 5, tier: 2, h1From: '2005-01-01' },
 };
+export const M5_FROM = '2013-01-01';
 export const DAY = 86400000;
 
 export function sha256(buffer) {
@@ -94,10 +103,16 @@ export function summary(rows) {
   return { n: rows.length, first: rows[0]?.timestamp / 1000, last: rows.at(-1)?.timestamp / 1000 };
 }
 
+// Tier 2 instruments that are not published yet and must be seeded.
+export function missingInstruments(meta) {
+  return Object.keys(INSTRUMENTS).filter(name => INSTRUMENTS[name].tier === 2 && !meta?.instruments?.[name]);
+}
+
 export function expectedFiles(meta) {
-  const files = [];
+  const files = [], missing = new Set(missingInstruments(meta));
   for (const [name, cfg] of Object.entries(INSTRUMENTS)) {
     const instrument = meta?.instruments?.[name];
+    if (missing.has(name)) continue;
     if (!instrument || instrument.scale !== cfg.scale || !Array.isArray(instrument.m5Years) ||
         !instrument.h1?.n || !instrument.m5Years.length) throw new Error('Invalid metadata for ' + name);
     if (instrument.m5Years.some((y, i, list) => !Number.isInteger(y) || y < 2013 || y > 2037 || (i && y <= list[i - 1]))) {

@@ -7,6 +7,8 @@ import { INSTRUMENTS, writeBars, readBars, sha256, summary, mergeBars } from '..
 import { updateQuotes, hourlyFromMinutes } from '../tools/update.mjs';
 import { preserveOverlap } from '../jforex-update.mjs';
 
+// Dukascopy-path fixtures cover tier 1; tier 2 is seeded only from OANDA.
+const TIER1 = Object.entries(INSTRUMENTS).filter(([, cfg]) => cfg.tier === 1);
 const stamp = value => Date.parse(value + 'Z');
 const candle = timestamp => ({ timestamp, open: 1, high: 1.2, low: 0.8, close: 1.1 });
 const oldH1 = candle(stamp('2013-12-31T23:00:00'));
@@ -17,7 +19,7 @@ async function seed(t, { checksums = false } = {}) {
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const out = path.join(root, 'replay-data'); await fs.mkdir(out);
   const meta = { generated: '2014-01-01T06:00:00.000Z', instruments: {} }, buffers = new Map();
-  for (const [asset, cfg] of Object.entries(INSTRUMENTS)) {
+  for (const [asset, cfg] of TIER1) {
     const prefix = asset.toLowerCase();
     const h1 = writeBars([oldH1], cfg.scale, 3600), m5 = writeBars([oldM5], cfg.scale, 300);
     buffers.set(prefix + '_h1.bin', h1); buffers.set(prefix + '_m5_2013.bin', m5);
@@ -55,7 +57,7 @@ test('SDK update appends without rewriting history, is idempotent, and failures 
   }}),/SDK incomplete/);
   for(const [name,bytes] of buffers) assert.deepEqual(await fs.readFile(path.join(out,name)),bytes);
   assert.equal((await updateQuotes({...common,out,history})).changed,true);
-  for(const [asset,cfg] of Object.entries(INSTRUMENTS)) {
+  for(const [asset,cfg] of TIER1) {
     const rows=readBars(await fs.readFile(path.join(out,asset.toLowerCase()+'_h1.bin')),cfg.scale,3600);
     assert.deepEqual(rows[0],oldH1);assert.equal(rows.length,2);
   }
@@ -89,7 +91,7 @@ test('new year creates M5 files, extends H1, preserves old files and writes chec
   const { out, buffers } = await seed(t);
   const result = await updateQuotes({ ...common, out, rates: provider() });
   assert.equal(result.changed, true);
-  for (const [asset, cfg] of Object.entries(INSTRUMENTS)) {
+  for (const [asset, cfg] of TIER1) {
     const prefix = asset.toLowerCase();
     assert.deepEqual(result.meta.instruments[asset].m5Years, [2013, 2014]);
     assert.equal(result.meta.instruments[asset].h1.n, 2);
@@ -125,7 +127,7 @@ test('missing current-month H1 is recovered only when M1 matches archived and na
   // Add a known January hour; native endpoint returns only December.
   const known = candle(stamp('2014-01-01T00:00:00'));
   const meta = JSON.parse(await fs.readFile(path.join(out, 'meta.json')));
-  for (const [asset, cfg] of Object.entries(INSTRUMENTS)) {
+  for (const [asset, cfg] of TIER1) {
     await fs.writeFile(path.join(out, asset.toLowerCase() + '_h1.bin'), writeBars([oldH1, known], cfg.scale, 3600));
     meta.instruments[asset].h1 = summary([oldH1, known]);
   }
@@ -228,3 +230,4 @@ test('bootstrap preserves archive bytes and generation date without calling prov
   }
   assert.equal(Object.keys(result.meta.files).length, 8);
 });
+
