@@ -96,7 +96,10 @@ export function verifyHours(hours, minutes, scale, label = '') {
   const native = new Map(hours.map(b => [b.timestamp, b]));
   for (const t of all) {
     const h = native.get(t), g = derived.get(t);
-    const ok = h && g && Math.round(h.high * scale) === Math.round(g.high * scale) && Math.round(h.low * scale) === Math.round(g.low * scale);
+    // A missing hour is not a price discrepancy. Publishing later candles
+    // would make this gap permanent because daily updates only append.
+    if (!h || !g) throw new Error(label + ': OANDA H1/M5 missing ' + (!h ? 'H1' : 'M5') + ' hour at ' + iso(t));
+    const ok = Math.round(h.high * scale) === Math.round(g.high * scale) && Math.round(h.low * scale) === Math.round(g.low * scale);
     if (!ok) { mismatched++; if (examples.length < 3) examples.push(iso(t)); }
   }
   if (!all.size) throw new Error(label + ': OANDA returned no candles');
