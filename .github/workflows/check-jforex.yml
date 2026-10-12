@@ -15,6 +15,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Test archive preservation and SDK validation
+        run: node --test test/*.test.mjs
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -33,8 +35,12 @@ jobs:
         run: |
           printf 'log4j.rootLogger=OFF\n' > target/log4j.properties
           java -Djava.awt.headless=true -Dlog4j.configuration=file:target/log4j.properties -cp 'target/classes:target/lib/*' ReplayHistory "$FROM" "$TO" jforex-check
-      - name: Verify archive overlap and new candles
-        run: node jforex-check.mjs
+      - name: Report raw SDK differences
+        run: node jforex-check.mjs --report-only
+      - name: Verify and stage complete archive without publication
+        env:
+          REPLAY_SOURCE_URL: https://retocker-replay-quotes.web.app/replay-data/
+        run: node jforex-update.mjs
       - name: Save quote comparison (no credentials or SDK logs)
         if: always()
         uses: actions/upload-artifact@v4
