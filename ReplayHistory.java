@@ -33,6 +33,9 @@ public final class ReplayHistory implements IStrategy {
             ReplayHistory reader=new ReplayHistory(from,to,Paths.get(args[2]));
             Files.createDirectories(reader.out);
             client=ClientFactory.getDefaultInstance();
+            // A dedicated new cache prevents a transient empty response from
+            // being reused on a later verification attempt.
+            client.setCacheDirectory(reader.out.resolve("sdk-cache-"+UUID.randomUUID()).toFile());
             client.setSystemListener(new ISystemListener() {
                 public void onStart(long id) {}
                 public void onStop(long id) { reader.done.countDown(); }

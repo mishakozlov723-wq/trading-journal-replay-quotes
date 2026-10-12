@@ -77,7 +77,9 @@ export async function updateFromJForex({ directory='jforex-check', ...options }=
       series.set(asset+' '+tf,bars);
     }
     const native=series.get(asset+' h1');
-    const completed=completeHours(native,series.get(asset+' m5'),cfg.scale);
+    let completed;
+    try { completed=completeHours(native,series.get(asset+' m5'),cfg.scale); }
+    catch(error) { throw new Error(asset+': '+error.message); }
     series.set(asset+' h1',completed);
     verifyTimeframes(completed,series.get(asset+' m5'),cfg.scale);
     (options.log || console.log)(asset,'H1 recovered from verified M5:',completed.length-native.length);
