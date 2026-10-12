@@ -177,3 +177,27 @@ test('seed plausibility rejects long gaps and thin years', () => {
   const thin = hours(y, 3 * 8760).filter((b, i) => i < 8760 || i >= 2 * 8760 || i % 3 === 0);
   assert.throws(() => checkSeed(thin, 3600, 'x', { maxGapHours: 100, minH1PerYear: 5000 }), /only \d+ candles in 2011/);
 });
+
+test('remote snapshot is reused from cache when checksums match; stale cache files are re-downloaded', async t => {
+  const { out, buffers } = await seed(t);
+  const cacheDir = out + '-cache'; t.after(() => fs.rm(cacheDir, { recursive: true, force: true }));
+  const requested = [];
+  const remote = async url => {
+    const name = url.pathname.split('/').pop(); requested.push(name);
+    const buffer = buffers.get(name); if (!buffer) return { ok: false, status: 404 };
+    return { ok: true, status: 200, arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.length) };
+  };
+  const quiet = { token, fetchImpl: oandaFetch({ offsetTicks: 1 }), wait: async () => {}, log: () => {} };
+  const run = () => updateQuotes({ ...common, sourceURL: 'https://quotes-test.web.app/replay-data/', fetchImpl: remote, out: out + '-new', cacheDir, history: oandaHistory(quiet) });
+  t.after(() => fs.rm(out + '-new', { recursive: true, force: true }));
+  await run();
+  assert.ok(requested.length > 2);
+  // Simulate the deploy: Hosting now serves what the first run produced.
+  for (const name of await fs.readdir(out + '-new')) buffers.set(name, await fs.readFile(path.join(out + '-new', name)));
+  requested.length = 0;
+  await fs.writeFile(path.join(cacheDir, 'eurusd_h1.bin'), Buffer.from('stale'));
+  await fs.rm(path.join(cacheDir, 'gbpusd_h1.bin'));
+  await run();
+  // Only meta.json and the two damaged files are fetched again.
+  assert.deepEqual(requested.sort(), ['eurusd_h1.bin', 'gbpusd_h1.bin', 'meta.json']);
+});

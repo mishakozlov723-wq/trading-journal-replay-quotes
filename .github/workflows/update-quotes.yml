@@ -40,11 +40,21 @@ jobs:
           node tools/configure.mjs
       - run: npm ci
       - run: npm test
+      # Published files are reused from the Actions cache when their checksum
+      # matches meta.json, so the nightly run does not re-download ~190 MB
+      # from Firebase Hosting (Spark plan transfer quota).
+      - name: Restore cached quote files
+        uses: actions/cache@v4
+        with:
+          path: .quotes-cache
+          key: replay-quotes-${{ github.run_id }}
+          restore-keys: replay-quotes-
       - name: Fetch published history and add completed OANDA candles
         id: quotes
         env:
           OANDA_API_TOKEN: ${{ secrets.OANDA_API_TOKEN }}
           MODE: ${{ inputs.mode || 'update' }}
+          QUOTES_CACHE_DIR: ${{ github.workspace }}/.quotes-cache
         run: |
           if [ "$MODE" = bootstrap ]; then
             export REPLAY_SOURCE_URL=https://retocker.web.app/replay-data/

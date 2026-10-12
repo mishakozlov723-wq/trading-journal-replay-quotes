@@ -236,7 +236,7 @@ async function main() {
   const report = {};
   const out = dryRun ? path.resolve('oanda-check/replay-data') : undefined;
   const result = await updateQuotes({
-    sourceURL: process.env.REPLAY_SOURCE_URL, out, sourceLabel: SOURCE_LABEL,
+    sourceURL: process.env.REPLAY_SOURCE_URL, out, sourceLabel: SOURCE_LABEL, cacheDir: process.env.QUOTES_CACHE_DIR || undefined,
     history: oandaHistory({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
     seed: oandaSeed({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
   });

@@ -37,7 +37,7 @@ async function retry(fn, label, wait = pause) {
 export async function updateQuotes({
   sourceURL, out = path.join(root, 'public/replay-data'), now = new Date(),
   fetchImpl = fetch, rates, history, seed, wait = pause, log = console.log, bootstrap = false,
-  sourceLabel = 'Dukascopy BID',
+  sourceLabel = 'Dukascopy BID', cacheDir,
 } = {}) {
   const source = sourceURL ? new URL(sourceURL) : null;
   if (source && (source.protocol !== 'https:' || !source.hostname.endsWith('.web.app') || source.search || source.hash)) {
@@ -64,8 +64,25 @@ export async function updateQuotes({
   const buffers = new Map(), rowsByFile = new Map();
   // Restore the published snapshot rather than stale files from a Git checkout.
   // All download/validation work finishes before touching the output directory.
+  // Files whose checksum matches the published meta are reused from the local
+  // cache (GitHub Actions cache) instead of being downloaded from Hosting again.
+  const fromCache = async name => {
+    const expected = meta.files?.[name]?.sha256;
+    if (!cacheDir || !expected) return null;
+    try { const buffer = await fs.readFile(path.join(cacheDir, name)); return sha256(buffer) === expected ? buffer : null; }
+    catch { return null; }
+  };
+  const toCache = async (name, buffer) => {
+    if (!cacheDir) return;
+    await fs.mkdir(cacheDir, { recursive: true });
+    await fs.writeFile(path.join(cacheDir, name), buffer);
+  };
+  let reused = 0, downloadedFiles = 0;
   for (const file of files) {
-    const buffer = source ? await getRemote(file.name) : await fs.readFile(path.join(out, file.name));
+    let buffer = source ? await fromCache(file.name) : null;
+    if (buffer) reused++;
+    else if (source) { buffer = await getRemote(file.name); downloadedFiles++; }
+    else buffer = await fs.readFile(path.join(out, file.name));
     if (meta.files?.[file.name]?.sha256 && sha256(buffer) !== meta.files[file.name].sha256) {
       throw new Error('Snapshot changed during download; retry the run');
     }
@@ -74,6 +91,10 @@ export async function updateQuotes({
       throw new Error('Candle is in the wrong yearly file');
     }
     buffers.set(file.name, buffer); rowsByFile.set(file.name, rows);
+  }
+  if (source) {
+    log('Snapshot restored:', reused, 'files from cache,', downloadedFiles, 'downloaded');
+    for (const [name, buffer] of buffers) await toCache(name, buffer);
   }
   for (const [asset] of published) {
     const h1 = rowsByFile.get(asset.toLowerCase() + '_h1.bin');
@@ -248,6 +269,7 @@ export async function updateQuotes({
   } finally {
     await fs.rm(stage, { recursive: true, force: true });
   }
+  for (const [filename, buffer] of buffers) await toCache(filename, buffer);
   return { changed: true, meta };
 }
 
