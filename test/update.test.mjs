@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { INSTRUMENTS, writeBars, readBars, sha256, summary, mergeBars } from '../tools/data.mjs';
 import { updateQuotes, hourlyFromMinutes } from '../tools/update.mjs';
+import { preserveOverlap } from '../jforex-update.mjs';
 
 const stamp = value => Date.parse(value + 'Z');
 const candle = timestamp => ({ timestamp, open: 1, high: 1.2, low: 0.8, close: 1.1 });
@@ -40,6 +41,26 @@ function provider({ append = true, incomplete = false, failAsset } = {}) {
   };
 }
 const common = { now: new Date('2014-01-02T06:23:00Z'), wait: async () => {}, log: () => {} };
+
+test('SDK update appends without rewriting history, is idempotent, and failures are atomic', async t => {
+  const {out,buffers}=await seed(t,{checksums:true});
+  const history=async request=>{
+    const old=request.timeframe==='h1'?oldH1:oldM5;
+    const fresh=candle(stamp('2014-01-01T00:00:00'));
+    return preserveOverlap(request.existing,[{...old,close:1.15},fresh],{...request,scale:INSTRUMENTS[request.asset].scale});
+  };
+  await assert.rejects(updateQuotes({...common,out,history:async request=>{
+    if(request.asset==='GBPUSD') throw new Error('SDK incomplete');
+    return history(request);
+  }}),/SDK incomplete/);
+  for(const [name,bytes] of buffers) assert.deepEqual(await fs.readFile(path.join(out,name)),bytes);
+  assert.equal((await updateQuotes({...common,out,history})).changed,true);
+  for(const [asset,cfg] of Object.entries(INSTRUMENTS)) {
+    const rows=readBars(await fs.readFile(path.join(out,asset.toLowerCase()+'_h1.bin')),cfg.scale,3600);
+    assert.deepEqual(rows[0],oldH1);assert.equal(rows.length,2);
+  }
+  assert.equal((await updateQuotes({...common,out,history})).changed,false);
+});
 
 test('binary round trip, bad lengths, scales, sorting and OHLC are rejected', () => {
   const buffer = writeBars([oldH1], 1000, 3600);
