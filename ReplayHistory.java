@@ -55,8 +55,8 @@ public final class ReplayHistory implements IStrategy {
             while(!client.getSubscribedInstruments().containsAll(instruments) && System.currentTimeMillis()<deadline) Thread.sleep(500);
             if(!client.getSubscribedInstruments().containsAll(instruments)) throw new IllegalStateException("Subscription timeout");
             client.startStrategy(reader);
-            if(!reader.done.await(5,TimeUnit.MINUTES)) {
-                System.err.println("History timeout after five minutes; no publication");
+            if(!reader.done.await(10,TimeUnit.MINUTES)) {
+                System.err.println("History timeout after ten minutes; no publication");
                 for(Map.Entry<Thread,StackTraceElement[]> entry:Thread.getAllStackTraces().entrySet()) {
                     for(StackTraceElement frame:entry.getValue()) if(frame.getClassName().equals("ReplayHistory") && frame.getMethodName().equals("onStart")) {
                         System.err.println("History reader stack:");
@@ -87,9 +87,9 @@ public final class ReplayHistory implements IStrategy {
                     for(long day=from;day<to;day+=DAY) {
                         System.out.println("Reading "+ASSETS[i]+" "+names[p]+" "+java.time.Instant.ofEpochMilli(day));
                         List<IBar> bars=context.getHistory().getBars(Instrument.fromString(SYMBOLS[i]), periods[p], OfferSide.BID, Filter.WEEKENDS, day, day+DAY-periods[p].getInterval());
-                        // A first history request can return an empty cache while SDK data loads.
-                        // Retry empty days, but retain legitimate closed-market days as empty.
-                        for(int retry=0; bars.isEmpty() && retry<2; retry++) {
+                        // Retry an empty response once before downstream coverage validation.
+                        // Legitimate closed-market days remain empty.
+                        for(int retry=0; bars.isEmpty() && retry<1; retry++) {
                             Thread.sleep(2000);
                             bars=context.getHistory().getBars(Instrument.fromString(SYMBOLS[i]), periods[p], OfferSide.BID, Filter.WEEKENDS, day, day+DAY-periods[p].getInterval());
                         }

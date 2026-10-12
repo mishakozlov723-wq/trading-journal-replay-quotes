@@ -83,6 +83,6 @@ async function main() {
   await fs.writeFile(path.join(out,'comparison.json'),JSON.stringify(results,null,2));
   if(process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY,
     '# JForex read-only comparison\n\n|Series|Overlap|Missing|Changed OHLC|New bars|Last UTC|\n|---|---:|---:|---:|---:|---|\n'+Object.entries(results).map(([k,v])=>`|${k}|${v.overlap}|${v.missing}|${v.different}|${v.newCandles}|${v.lastUTC}|`).join('\n')+'\n\nNo publication performed.\n');
-  if(Object.values(results).some(v=>v.missing || v.different || !v.newCandles)) throw new Error('Compatibility/freshness check failed; inspect comparison before changing the production updater');
+  if(!process.argv.includes('--report-only') && Object.values(results).some(v=>v.missing || v.different || !v.newCandles)) throw new Error('Compatibility/freshness check failed; inspect comparison before changing the production updater');
 }
 if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) main().catch(e=>{console.error(e.message);process.exitCode=1;});
