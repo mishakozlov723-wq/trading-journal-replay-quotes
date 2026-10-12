@@ -36,7 +36,7 @@ async function retry(fn, label, wait = pause) {
 
 export async function updateQuotes({
   sourceURL, out = path.join(root, 'public/replay-data'), now = new Date(),
-  fetchImpl = fetch, rates, wait = pause, log = console.log, bootstrap = false,
+  fetchImpl = fetch, rates, history, wait = pause, log = console.log, bootstrap = false,
 } = {}) {
   const source = sourceURL ? new URL(sourceURL) : null;
   if (source && (source.protocol !== 'https:' || !source.hostname.endsWith('.web.app') || source.search || source.hash)) {
@@ -82,7 +82,7 @@ export async function updateQuotes({
       throw new Error('M5 metadata disagrees with candles for ' + asset);
     }
   }
-  if (!bootstrap && !rates) ({ getHistoricalRates: rates } = await import('dukascopy-node'));
+  if (!bootstrap && !rates && !history) ({ getHistoricalRates: rates } = await import('dukascopy-node'));
   let changed = false;
   if (!bootstrap) {
   for (const [asset, cfg] of Object.entries(INSTRUMENTS)) {
@@ -93,7 +93,10 @@ export async function updateQuotes({
       ['m5', 300, m5Files.flatMap(file => rowsByFile.get(file.name))],
     ]) {
       const from = Math.floor((existing.at(-1).timestamp - 7 * DAY) / DAY) * DAY;
-      const downloaded = [];
+      let downloaded = [];
+      if (history) {
+        downloaded = await history({ asset, timeframe, existing, from, to: cutoff });
+      } else {
       let nativeUnavailable = false;
       // H1 is supplied in monthly buckets: fetch each once, not once per day.
       // M5 is supplied in daily buckets. Explicit retries make non-200 responses
@@ -157,6 +160,7 @@ export async function updateQuotes({
           downloaded.push(...recovered.filter(row => !native.has(row.timestamp)).map(row => archived.get(row.timestamp) || row));
           log(asset, 'H1 recovered from verified M1 candles:', missing.length, 'archived hours preserved;', recovered.length, 'hours checked');
         }
+      }
       }
       let merged;
       try { merged = mergeBars(existing, downloaded, { scale: cfg.scale, interval, from, to: cutoff }); }
