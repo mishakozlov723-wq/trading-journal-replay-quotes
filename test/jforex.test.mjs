@@ -2,8 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCandles,compareCandles } from '../jforex-check.mjs';
 import { preserveOverlap,completeHours,verifyTimeframes } from '../jforex-update.mjs';
+import { combineExports } from '../jforex-fetch.mjs';
 const head='timestamp,open,high,low,close,volume\n';
 const line='3600000,1.1,1.2,1,1.15,2';
+test('SDK retries fill missing chunks, deduplicate and reject conflicting prices',()=>{
+  const [a]=parseCandles(head+line,100000,3600);
+  const b={...a,timestamp:7200000};
+  assert.deepEqual(combineExports([b],[a,b],100000),[a,b]);
+  assert.deepEqual(combineExports([a],[],100000),[a]);
+  assert.throws(()=>combineExports([a],[{...a,close:1.16}],100000),/disagree/);
+});
 test('JForex CSV rejects malformed, duplicated and off-grid candles',()=>{
   assert.equal(parseCandles(head+line,100000,3600).length,1);
   for(const body of [line+'\n'+line,'3600001,1.1,1.2,1,1.15,2','3600000,1.1,1.2,1,NaN,2','3600000,,1.2,1,1.15,2'])
