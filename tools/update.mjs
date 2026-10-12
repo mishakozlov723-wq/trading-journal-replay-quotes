@@ -37,6 +37,7 @@ async function retry(fn, label, wait = pause) {
 export async function updateQuotes({
   sourceURL, out = path.join(root, 'public/replay-data'), now = new Date(),
   fetchImpl = fetch, rates, history, wait = pause, log = console.log, bootstrap = false,
+  sourceLabel = 'Dukascopy BID',
 } = {}) {
   const source = sourceURL ? new URL(sourceURL) : null;
   if (source && (source.protocol !== 'https:' || !source.hostname.endsWith('.web.app') || source.search || source.hash)) {
@@ -195,7 +196,7 @@ export async function updateQuotes({
     meta.generated = now.toISOString();
     meta.checkedThroughUTC = new Date(cutoff - DAY).toISOString().slice(0, 10);
   }
-  meta.source = 'Dukascopy BID';
+  meta.source = sourceLabel;
   meta.files = Object.fromEntries([...buffers].map(([filename, buffer]) => [filename, {
     ...summary(rowsByFile.get(filename)), sha256: sha256(buffer), bytes: buffer.length,
   }]));
@@ -226,3 +227,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     process.exitCode = 1;
   }
 }
+

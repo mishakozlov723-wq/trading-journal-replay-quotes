@@ -1,0 +1,37 @@
+name: Check OANDA quotes (no publication)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oanda-quotes-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Download OANDA candles, verify against the published archive, stage without publication
+        env:
+          OANDA_API_TOKEN: ${{ secrets.OANDA_API_TOKEN }}
+          REPLAY_SOURCE_URL: https://retocker-replay-quotes.web.app/replay-data/
+        run: node oanda-fetch.mjs --dry-run
+      - name: Save verification report (no credentials)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oanda-check-report
+          path: oanda-check/report.json
+          if-no-files-found: ignore
+          retention-days: 7
