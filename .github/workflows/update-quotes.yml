@@ -24,7 +24,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
       FIREBASE_PROJECT_ID: retocker
       FIREBASE_QUOTES_SITE: ${{ vars.FIREBASE_QUOTES_SITE }}
@@ -40,23 +40,10 @@ jobs:
           node tools/configure.mjs
       - run: npm ci
       - run: npm test
-      - uses: actions/setup-java@v4
-        if: inputs.mode != 'bootstrap'
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Build official JForex history reader
-        if: inputs.mode != 'bootstrap'
-        run: mvn -B -f jforex-pom.xml compile dependency:copy-dependencies -DoutputDirectory=target/lib
-      - name: Prepare SDK completed-day range
-        if: inputs.mode != 'bootstrap'
-        id: range
-        run: node jforex-check.mjs --prepare
-      - name: Fetch published history and add completed candles
+      - name: Fetch published history and add completed OANDA candles
         id: quotes
         env:
-          DUKASCOPY_USERNAME: ${{ secrets.DUKASCOPY_USERNAME }}
-          DUKASCOPY_PASSWORD: ${{ secrets.DUKASCOPY_PASSWORD }}
+          OANDA_API_TOKEN: ${{ secrets.OANDA_API_TOKEN }}
           MODE: ${{ inputs.mode || 'update' }}
         run: |
           if [ "$MODE" = bootstrap ]; then
@@ -64,7 +51,7 @@ jobs:
             node tools/update.mjs --bootstrap
           else
             export REPLAY_SOURCE_URL="https://$FIREBASE_QUOTES_SITE.web.app/replay-data/"
-            node jforex-fetch.mjs
+            node oanda-fetch.mjs
           fi
       - name: Install deployment CLI
         if: steps.quotes.outputs.changed == 'true'
@@ -81,4 +68,3 @@ jobs:
           export GOOGLE_APPLICATION_CREDENTIALS="$KEY_FILE"
           trap 'rm -f "$KEY_FILE"' EXIT
           "$RUNNER_TEMP/replay-firebase-cli/node_modules/.bin/firebase" deploy --only hosting:quotes --project "$FIREBASE_PROJECT_ID" --non-interactive
-
