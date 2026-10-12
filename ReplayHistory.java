@@ -55,7 +55,17 @@ public final class ReplayHistory implements IStrategy {
             while(!client.getSubscribedInstruments().containsAll(instruments) && System.currentTimeMillis()<deadline) Thread.sleep(500);
             if(!client.getSubscribedInstruments().containsAll(instruments)) throw new IllegalStateException("Subscription timeout");
             client.startStrategy(reader);
-            if(!reader.done.await(20,TimeUnit.MINUTES)) throw new IllegalStateException("History timeout");
+            if(!reader.done.await(5,TimeUnit.MINUTES)) {
+                System.err.println("History timeout after five minutes; no publication");
+                for(Map.Entry<Thread,StackTraceElement[]> entry:Thread.getAllStackTraces().entrySet()) {
+                    for(StackTraceElement frame:entry.getValue()) if(frame.getClassName().equals("ReplayHistory") && frame.getMethodName().equals("onStart")) {
+                        System.err.println("History reader stack:");
+                        for(StackTraceElement item:entry.getValue()) System.err.println("  "+item);
+                        break;
+                    }
+                }
+                System.exit(2);
+            }
             if(!reader.success) throw new IllegalStateException("History export failed");
             code=0;
         } catch(Exception e) {
@@ -68,13 +78,14 @@ public final class ReplayHistory implements IStrategy {
         try {
             Period[] periods={Period.ONE_HOUR,Period.FIVE_MINS};
             String[] names={"h1","m5"};
-            for(int i=0;i<ASSETS.length;i++) for(int p=0;p<periods.length;p++) {
+            for(int p=0;p<periods.length;p++) for(int i=0;i<ASSETS.length;i++) {
                 Path file=out.resolve(ASSETS[i]+"_"+names[p]+".csv");
                 int count=0;
                 long previous=-1;
                 try(BufferedWriter writer=Files.newBufferedWriter(file,StandardCharsets.UTF_8)) {
                     writer.write("timestamp,open,high,low,close,volume\n");
                     for(long day=from;day<to;day+=DAY) {
+                        System.out.println("Reading "+ASSETS[i]+" "+names[p]+" "+java.time.Instant.ofEpochMilli(day));
                         List<IBar> bars=context.getHistory().getBars(Instrument.fromString(SYMBOLS[i]), periods[p], OfferSide.BID, Filter.WEEKENDS, day, day+DAY-periods[p].getInterval());
                         for(IBar bar:bars) {
                             long t=bar.getTime();
@@ -84,6 +95,7 @@ public final class ReplayHistory implements IStrategy {
                             writer.write(t+","+bar.getOpen()+","+bar.getHigh()+","+bar.getLow()+","+bar.getClose()+","+bar.getVolume()+"\n");
                             count++;
                         }
+                        writer.flush();
                     }
                 }
                 if(count==0) throw new IllegalStateException("Empty history");
