@@ -9,7 +9,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,21 +26,14 @@ jobs:
       - name: Prepare completed-day range from published metadata
         id: range
         run: node jforex-check.mjs --prepare
-      - name: Read BID history from JForex demo
+      - name: Download, verify and stage archive without publication
         env:
           DUKASCOPY_USERNAME: ${{ secrets.DUKASCOPY_USERNAME }}
           DUKASCOPY_PASSWORD: ${{ secrets.DUKASCOPY_PASSWORD }}
-          FROM: ${{ steps.range.outputs.from }}
-          TO: ${{ steps.range.outputs.to }}
-        run: |
-          printf 'log4j.rootLogger=OFF\n' > target/log4j.properties
-          java -Djava.awt.headless=true -Dlog4j.configuration=file:target/log4j.properties -cp 'target/classes:target/lib/*' ReplayHistory "$FROM" "$TO" jforex-check
+          REPLAY_SOURCE_URL: https://retocker-replay-quotes.web.app/replay-data/
+        run: node jforex-fetch.mjs
       - name: Report raw SDK differences
         run: node jforex-check.mjs --report-only
-      - name: Verify and stage complete archive without publication
-        env:
-          REPLAY_SOURCE_URL: https://retocker-replay-quotes.web.app/replay-data/
-        run: node jforex-update.mjs
       - name: Save quote comparison (no credentials or SDK logs)
         if: always()
         uses: actions/upload-artifact@v4
@@ -50,3 +43,4 @@ jobs:
             jforex-check/*.csv
             jforex-check/comparison.json
           retention-days: 3
+
