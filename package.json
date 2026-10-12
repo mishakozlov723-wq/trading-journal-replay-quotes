@@ -7,7 +7,7 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "configure": "node tools/configure.mjs",
-    "update": "node tools/update.mjs"
+    "update": "node jforex-update.mjs"
   },
   "dependencies": { "dukascopy-node": "1.50.0" }
 }

@@ -7,3 +7,5 @@ node_modules/
 public/replay-data/
 .replay-secrets/
 *.pem
+target/
+jforex-check/
