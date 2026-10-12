@@ -98,6 +98,29 @@ test('H1 must agree with M5 aggregation', () => {
   assert.throws(() => verifyHours(broken, s.m5, 100000), /H1\/M5 disagree/);
 });
 
+test('a missing new hour in either timeframe aborts even below the price mismatch tolerance', async t => {
+  for (const granularity of ['H1', 'M5']) {
+    const { out, buffers } = await seed(t);
+    const good = oandaFetch();
+    const missingHour = start + 2 * DAY + 5 * H;
+    const partial = async url => {
+      const response = await good(url);
+      const body = await response.json();
+      if (body.instrument === 'EUR_USD' && body.granularity === granularity) {
+        body.candles = body.candles.filter(c => {
+          const time = Date.parse(c.time);
+          return time < missingHour || time >= missingHour + H;
+        });
+      }
+      return { ...response, json: async () => body };
+    };
+    await assert.rejects(updateQuotes({ ...common, out,
+      history: oandaHistory({ token, fetchImpl: partial, wait: async () => {}, log: () => {} }),
+    }), /H1\/M5.*missing/);
+    for (const [name, buffer] of buffers) assert.deepEqual(await fs.readFile(path.join(out, name)), buffer);
+  }
+});
+
 test('overlap check accepts a similar feed and rejects wrong level, gaps and opposite candles', () => {
   const range = { from: start, to: start + DAY };
   const archive = series('EURUSD', start, start + DAY).m5;
