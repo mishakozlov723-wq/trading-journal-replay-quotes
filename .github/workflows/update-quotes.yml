@@ -2,8 +2,9 @@ name: Update replay quotes
 
 on:
   schedule:
-    # 03:23 UTC = 06:23 Moscow, after the previous UTC day and NY trading close.
-    - cron: '23 3 * * *'
+    # 06:23 Moscow, with catch-up attempts at 07:23 and 08:23.
+    # GitHub may delay/drop a scheduled run; unchanged data is not redeployed.
+    - cron: '23 3,4,5 * * *'
   workflow_dispatch:
     inputs:
       mode:
