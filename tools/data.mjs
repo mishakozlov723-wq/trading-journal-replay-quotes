@@ -19,7 +19,7 @@ export const M5_FROM = '2013-01-01';
 // unchanged; the first M3 backfill is limited to a recent window so the
 // initial publication fits OANDA's request and workflow limits.
 export const M3_FROM = '2025-01-01';
-export const M3_LOOKBACK_DAYS = 90;
+export const M3_LOOKBACK_DAYS = 30;
 export const DAY = 86400000;
 
 export function sha256(buffer) {
