@@ -256,7 +256,7 @@ export function oandaSeed({ token, fetchImpl = fetch, wait = pause, host = PRACT
   };
 }
 
-function summaryTable(report, dryRun, changed) {
+export function summaryTable(report, dryRun, changed) {
   const rows = Object.entries(report).map(([k, v]) => v.seeded
     ? `|${k}|new: ${v.firstUTC.slice(0, 10)} → ${v.lastUTC.slice(0, 10)}|max gap ${v.maxGapHours} h|—|${v.hourMismatch ?? '—'}|${v.newBars}|${v.lastNewUTC}|`
     : `|${k}|${(v.coverage * 100).toFixed(1)}%|${(v.medianRelative * 100).toFixed(3)}%|${(v.sameDirection * 100).toFixed(1)}%|${v.hourMismatch}|${v.newBars}|${v.lastNewUTC ?? '—'}|`);
