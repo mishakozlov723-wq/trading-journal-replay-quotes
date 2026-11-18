@@ -185,7 +185,13 @@ export function oandaHistory({ token, fetchImpl = fetch, wait = pause, host = PR
     }
     if (!existing.length) {
       if (!incoming.length) throw new Error(label + ': provider returned no candles for initial M3 archive');
-      const stats = { seeded: true, newBars: incoming.length, lastNewUTC: iso(incoming.at(-1).timestamp) };
+      const stats = {
+        seeded: true,
+        firstUTC: iso(incoming[0].timestamp),
+        lastUTC: iso(incoming.at(-1).timestamp),
+        newBars: incoming.length,
+        lastNewUTC: iso(incoming.at(-1).timestamp),
+      };
       report[label] = { ...stats, ...hours };
       log(label, JSON.stringify(report[label]));
       return incoming;
