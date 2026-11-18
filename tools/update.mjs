@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INSTRUMENTS, M5_FROM, M3_FROM, M3_LOOKBACK_DAYS, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
+import { INSTRUMENTS, M5_FROM, M3_FROM, M3_LOOKBACK_DAYS, M3_ASSETS, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -117,7 +117,7 @@ export async function updateQuotes({
     const prefix = asset.toLowerCase();
     const m5Files = files.filter(file => file.asset === asset && file.year && file.interval === 300);
     const m3Files = files.filter(file => file.asset === asset && file.year && file.interval === 180);
-    const includeM3 = supportsM3 && cfg.tier === 1;
+    const includeM3 = supportsM3 && M3_ASSETS.has(asset);
     for (const [timeframe, interval, existing] of [
       ['h1', 3600, rowsByFile.get(prefix + '_h1.bin')],
       ['m5', 300, m5Files.flatMap(file => rowsByFile.get(file.name))],

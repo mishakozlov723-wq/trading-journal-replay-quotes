@@ -20,6 +20,9 @@ export const M5_FROM = '2013-01-01';
 // initial publication fits OANDA's request and workflow limits.
 export const M3_FROM = '2025-01-01';
 export const M3_LOOKBACK_DAYS = 30;
+// Start with the requested instrument only. More instruments can be enabled
+// after the first production publication is proven.
+export const M3_ASSETS = new Set(['GER40']);
 export const DAY = 86400000;
 
 export function sha256(buffer) {
