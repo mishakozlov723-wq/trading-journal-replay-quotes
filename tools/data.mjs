@@ -15,6 +15,8 @@ export const INSTRUMENTS = {
   USDCHF: { scale: 100000, dp: 5, tier: 2, h1From: '2005-01-01' },
 };
 export const M5_FROM = '2013-01-01';
+// M3 is derived from verified OANDA M1 candles and keeps the same history start.
+export const M3_FROM = M5_FROM;
 export const DAY = 86400000;
 
 export function sha256(buffer) {
@@ -121,6 +123,16 @@ export function expectedFiles(meta) {
     files.push({ name: name.toLowerCase() + '_h1.bin', asset: name, interval: 3600 });
     for (const year of instrument.m5Years) {
       files.push({ name: name.toLowerCase() + '_m5_' + year + '.bin', asset: name, year, interval: 300 });
+    }
+    // M3 was added after the original archive. Keep it optional so an old
+    // published snapshot can be upgraded atomically on its next run.
+    if (Array.isArray(instrument.m3Years)) {
+      if (!instrument.m3Years.length || instrument.m3Years.some((y, i, list) => !Number.isInteger(y) || y < 2013 || y > 2037 || (i && y <= list[i - 1]))) {
+        throw new Error('Invalid M3 years');
+      }
+      for (const year of instrument.m3Years) {
+        files.push({ name: name.toLowerCase() + '_m3_' + year + '.bin', asset: name, year, interval: 180 });
+      }
     }
   }
   return files;

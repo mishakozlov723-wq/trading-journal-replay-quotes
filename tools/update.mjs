@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INSTRUMENTS, M5_FROM, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
+import { INSTRUMENTS, M5_FROM, M3_FROM, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -101,7 +101,7 @@ export async function updateQuotes({
     if (JSON.stringify(summary(h1)) !== JSON.stringify(meta.instruments[asset].h1)) {
       throw new Error('H1 metadata disagrees with candles for ' + asset);
     }
-    const m5 = files.filter(file => file.asset === asset && file.year);
+    const m5 = files.filter(file => file.asset === asset && file.year && file.interval === 300);
     if (m5.reduce((n, file) => n + rowsByFile.get(file.name).length, 0) !== meta.instruments[asset].m5Count) {
       throw new Error('M5 metadata disagrees with candles for ' + asset);
     }
@@ -111,16 +111,21 @@ export async function updateQuotes({
   if (!bootstrap) {
   for (const [asset, cfg] of published) {
     const prefix = asset.toLowerCase();
-    const m5Files = files.filter(file => file.asset === asset && file.year);
+    const m5Files = files.filter(file => file.asset === asset && file.year && file.interval === 300);
+    const m3Files = files.filter(file => file.asset === asset && file.year && file.interval === 180);
     for (const [timeframe, interval, existing] of [
       ['h1', 3600, rowsByFile.get(prefix + '_h1.bin')],
       ['m5', 300, m5Files.flatMap(file => rowsByFile.get(file.name))],
+      ['m3', 180, m3Files.length ? m3Files.flatMap(file => rowsByFile.get(file.name)) : []],
     ]) {
-      const from = Math.floor((existing.at(-1).timestamp - 7 * DAY) / DAY) * DAY;
+      const from = existing.length
+        ? Math.floor((existing.at(-1).timestamp - 7 * DAY) / DAY) * DAY
+        : Date.parse(M3_FROM + 'T00:00:00Z');
       let downloaded = [];
       if (history) {
         downloaded = await history({ asset, timeframe, existing, from, to: cutoff });
       } else {
+      if (timeframe === 'm3') throw new Error('M3 updates require the OANDA history provider');
       let nativeUnavailable = false;
       // H1 is supplied in monthly buckets: fetch each once, not once per day.
       // M5 is supplied in daily buckets. Explicit retries make non-200 responses
@@ -191,7 +196,7 @@ export async function updateQuotes({
       catch (error) { throw new Error(asset + ' ' + timeframe + ': ' + error.message, { cause: error }); }
       const partitions = new Map();
       for (const row of merged) {
-        const name = timeframe === 'h1' ? prefix + '_h1.bin' : prefix + '_m5_' + new Date(row.timestamp).getUTCFullYear() + '.bin';
+        const name = timeframe === 'h1' ? prefix + '_h1.bin' : prefix + '_' + timeframe + '_' + new Date(row.timestamp).getUTCFullYear() + '.bin';
         if (!partitions.has(name)) partitions.set(name, []);
         partitions.get(name).push(row);
       }
@@ -204,10 +209,14 @@ export async function updateQuotes({
     }
     const years = [...rowsByFile.keys()].filter(name => name.startsWith(prefix + '_m5_'))
       .map(name => Number(name.match(/_(\d{4})\.bin$/)[1])).sort((a, b) => a - b);
+    const m3Years = [...rowsByFile.keys()].filter(name => name.startsWith(prefix + '_m3_'))
+      .map(name => Number(name.match(/_(\d{4})\.bin$/)[1])).sort((a, b) => a - b);
     meta.instruments[asset] = {
       ...meta.instruments[asset], tier: cfg.tier, h1: summary(rowsByFile.get(prefix + '_h1.bin')),
       m5Years: years, m5First: rowsByFile.get(prefix + '_m5_' + years[0] + '.bin')[0].timestamp / 1000,
       m5Count: years.reduce((n, year) => n + rowsByFile.get(prefix + '_m5_' + year + '.bin').length, 0),
+      m3Years, m3First: m3Years.length ? rowsByFile.get(prefix + '_m3_' + m3Years[0] + '.bin')[0].timestamp / 1000 : undefined,
+      m3Count: m3Years.reduce((n, year) => n + rowsByFile.get(prefix + '_m3_' + year + '.bin').length, 0),
     };
   }
   // New tier 2 instruments: download their full history once. Every candle is
@@ -215,28 +224,32 @@ export async function updateQuotes({
   for (const asset of missing) {
     const cfg = INSTRUMENTS[asset], prefix = asset.toLowerCase();
     if (!seed) { log(asset, 'not published yet; this source cannot seed history, skipped'); continue; }
-    const fromOf = { h1: Date.parse(cfg.h1From + 'T00:00:00Z'), m5: Date.parse(M5_FROM + 'T00:00:00Z') };
-    for (const [timeframe, interval] of [['h1', 3600], ['m5', 300]]) {
+    const fromOf = { h1: Date.parse(cfg.h1From + 'T00:00:00Z'), m5: Date.parse(M5_FROM + 'T00:00:00Z'), m3: Date.parse(M3_FROM + 'T00:00:00Z') };
+    for (const [timeframe, interval] of [['h1', 3600], ['m5', 300], ['m3', 180]]) {
       const from = fromOf[timeframe];
       let rows;
       try { rows = mergeBars([], await seed({ asset, timeframe, from, to: cutoff }), { scale: cfg.scale, interval, from, to: cutoff }); }
       catch (error) { throw new Error(asset + ' ' + timeframe + ' seed: ' + error.message, { cause: error }); }
       if (!rows.length) throw new Error(asset + ' ' + timeframe + ' seed returned no candles');
       for (const row of rows) {
-        const name = timeframe === 'h1' ? prefix + '_h1.bin' : prefix + '_m5_' + new Date(row.timestamp).getUTCFullYear() + '.bin';
+        const name = timeframe === 'h1' ? prefix + '_h1.bin' : prefix + '_' + timeframe + '_' + new Date(row.timestamp).getUTCFullYear() + '.bin';
         if (!rowsByFile.has(name)) rowsByFile.set(name, []);
         rowsByFile.get(name).push(row);
       }
     }
     const names = [...rowsByFile.keys()].filter(name => name.startsWith(prefix + '_'));
-    for (const name of names) buffers.set(name, writeBars(rowsByFile.get(name), cfg.scale, name.endsWith('_h1.bin') ? 3600 : 300));
+    for (const name of names) buffers.set(name, writeBars(rowsByFile.get(name), cfg.scale, name.endsWith('_h1.bin') ? 3600 : name.includes('_m3_') ? 180 : 300));
     const years = names.filter(name => name.startsWith(prefix + '_m5_'))
       .map(name => Number(name.match(/_(\d{4})\.bin$/)[1])).sort((a, b) => a - b);
-    if (!years.length || !rowsByFile.has(prefix + '_h1.bin')) throw new Error(asset + ' seed is incomplete');
+    const m3Years = names.filter(name => name.startsWith(prefix + '_m3_'))
+      .map(name => Number(name.match(/_(\d{4})\.bin$/)[1])).sort((a, b) => a - b);
+    if (!years.length || !m3Years.length || !rowsByFile.has(prefix + '_h1.bin')) throw new Error(asset + ' seed is incomplete');
     meta.instruments[asset] = {
       scale: cfg.scale, dp: cfg.dp, tier: cfg.tier, h1: summary(rowsByFile.get(prefix + '_h1.bin')),
       m5Years: years, m5First: rowsByFile.get(prefix + '_m5_' + years[0] + '.bin')[0].timestamp / 1000,
       m5Count: years.reduce((n, year) => n + rowsByFile.get(prefix + '_m5_' + year + '.bin').length, 0),
+      m3Years, m3First: rowsByFile.get(prefix + '_m3_' + m3Years[0] + '.bin')[0].timestamp / 1000,
+      m3Count: m3Years.reduce((n, year) => n + rowsByFile.get(prefix + '_m3_' + year + '.bin').length, 0),
     };
     changed = true;
     log(asset, 'seeded:', meta.instruments[asset].h1.n, 'H1 and', meta.instruments[asset].m5Count, 'M5 candles');

@@ -23,8 +23,8 @@ export const SHORTER_SESSION = new Set(['GER40']);
 export const LIMITS = { coverage: 0.97, medianRelative: 0.002, maxRelative: 0.02, sameDirection: 0.8, hourMismatch: 0.02 };
 // Seeding a new instrument: no gap longer than this (weekends, Christmas, New Year),
 // and every calendar year must be reasonably complete.
-export const SEED_LIMITS = { maxGapHours: 100, minH1PerYear: 5000, minM5PerYear: 60000 };
-const TIMEFRAMES = { h1: ['H1', 3600000], m5: ['M5', 300000] };
+export const SEED_LIMITS = { maxGapHours: 100, minH1PerYear: 5000, minM5PerYear: 60000, minM3PerYear: 100000 };
+const TIMEFRAMES = { h1: ['H1', 3600000], m5: ['M5', 300000], m1: ['M1', 60000] };
 const CHUNK = 4000; // candles per request; OANDA allows at most 5000
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const iso = t => new Date(t).toISOString();
@@ -79,6 +79,21 @@ export async function fetchCandles({ instrument, timeframe, from, to, token, fet
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, starts.length) }, worker));
   return [...rows.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+// Build exact three-minute candles from verified OANDA M1 candles. The first
+// minute supplies the open, the last supplies the close; high/low span all
+// minutes in the bucket. Empty market gaps are naturally omitted.
+export function aggregateMinutes(rows, intervalMs = 180000) {
+  if (!Array.isArray(rows)) throw new Error('Minute rows must be an array');
+  const groups = new Map();
+  for (const row of rows) {
+    const timestamp = Math.floor(row.timestamp / intervalMs) * intervalMs;
+    const g = groups.get(timestamp);
+    if (g) { g.high = Math.max(g.high, row.high); g.low = Math.min(g.low, row.low); g.close = row.close; g.volume = (g.volume || 0) + (row.volume || 0); }
+    else groups.set(timestamp, { timestamp, open: row.open, high: row.high, low: row.low, close: row.close, volume: row.volume || 0 });
+  }
+  return [...groups.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
 // OANDA H1 must be the aggregation of OANDA M5 (same hours, same high/low).
@@ -151,13 +166,30 @@ export function oandaHistory({ token, fetchImpl = fetch, wait = pause, host = PR
     const instrument = OANDA_INSTRUMENTS[asset], { scale } = INSTRUMENTS[asset];
     if (!instrument) throw new Error('No OANDA instrument for ' + asset);
     const label = asset + ' ' + timeframe;
-    const h1 = await candles(instrument, 'h1', from, to), m5 = await candles(instrument, 'm5', from, to);
-    for (const [rows, interval] of [[h1, 3600], [m5, 300]]) for (const bar of rows) {
-      try { validateBar(bar, scale, interval); }
-      catch (error) { throw new Error(label + ': invalid OANDA candle at ' + iso(bar.timestamp) + ': ' + error.message); }
+    let incoming, hours = {};
+    if (timeframe === 'm3') {
+      const m1 = await candles(instrument, 'm1', from, to);
+      for (const bar of m1) {
+        try { validateBar(bar, scale, 60); }
+        catch (error) { throw new Error(label + ': invalid OANDA M1 candle at ' + iso(bar.timestamp) + ': ' + error.message); }
+      }
+      incoming = aggregateMinutes(m1);
+    } else {
+      const h1 = await candles(instrument, 'h1', from, to), m5 = await candles(instrument, 'm5', from, to);
+      for (const [rows, interval] of [[h1, 3600], [m5, 300]]) for (const bar of rows) {
+        try { validateBar(bar, scale, interval); }
+        catch (error) { throw new Error(label + ': invalid OANDA candle at ' + iso(bar.timestamp) + ': ' + error.message); }
+      }
+      hours = verifyHours(h1, m5, scale, asset);
+      incoming = timeframe === 'h1' ? h1 : m5;
     }
-    const hours = verifyHours(h1, m5, scale, asset);
-    const incoming = timeframe === 'h1' ? h1 : m5;
+    if (!existing.length) {
+      if (!incoming.length) throw new Error(label + ': provider returned no candles for initial M3 archive');
+      const stats = { seeded: true, newBars: incoming.length, lastNewUTC: iso(incoming.at(-1).timestamp) };
+      report[label] = { ...stats, ...hours };
+      log(label, JSON.stringify(report[label]));
+      return incoming;
+    }
     const stats = checkOverlap(existing, incoming, { asset, from, to, label });
     const last = existing.at(-1).timestamp;
     const fresh = incoming.filter(b => b.timestamp > last);
@@ -180,7 +212,7 @@ export function checkSeed(rows, interval, label, limits = SEED_LIMITS) {
   }
   const maxGapHours = +(maxGap / 3600000).toFixed(1);
   if (maxGapHours > limits.maxGapHours) throw new Error(label + ': gap of ' + maxGapHours + ' hours after ' + iso(at));
-  const minimum = interval === 3600 ? limits.minH1PerYear : limits.minM5PerYear;
+  const minimum = interval === 3600 ? limits.minH1PerYear : interval === 300 ? limits.minM5PerYear : limits.minM3PerYear;
   const firstYear = new Date(rows[0].timestamp).getUTCFullYear(), lastYear = new Date(rows.at(-1).timestamp).getUTCFullYear();
   for (const [year, n] of Object.entries(perYear)) {
     // The first and the current year are partial.
@@ -202,12 +234,14 @@ export function oandaSeed({ token, fetchImpl = fetch, wait = pause, host = PRACT
     const instrument = OANDA_INSTRUMENTS[asset], { scale } = INSTRUMENTS[asset];
     if (!instrument) throw new Error('No OANDA instrument for ' + asset);
     (ranges[asset] ||= {})[timeframe] = from;
-    const label = asset + ' ' + timeframe + ' seed', interval = timeframe === 'h1' ? 3600 : 300;
-    const rows = await candles(instrument, timeframe, from, to);
-    for (const bar of rows) {
-      try { validateBar(bar, scale, interval); }
+    const label = asset + ' ' + timeframe + ' seed', interval = timeframe === 'h1' ? 3600 : timeframe === 'm5' ? 300 : 180;
+    const sourceTimeframe = timeframe === 'm3' ? 'm1' : timeframe;
+    const sourceRows = await candles(instrument, sourceTimeframe, from, to);
+    for (const bar of sourceRows) {
+      try { validateBar(bar, scale, timeframe === 'm3' ? 60 : interval); }
       catch (error) { throw new Error(label + ': invalid OANDA candle at ' + iso(bar.timestamp) + ': ' + error.message); }
     }
+    const rows = timeframe === 'm3' ? aggregateMinutes(sourceRows) : sourceRows;
     const stats = checkSeed(rows, interval, label);
     // H1 and M5 must describe the same market where both exist.
     const m5From = timeframe === 'm5' ? from : ranges[asset].m5;
