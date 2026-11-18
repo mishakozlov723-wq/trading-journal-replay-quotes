@@ -8,11 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'update = fresh completed candles; bootstrap = copy original archive for first release only'
+        description: 'update = fresh candles; backfill-m3 = rebuild GER40 M3 from 2021; bootstrap = first release only'
         type: choice
         default: update
         options:
           - update
+          - backfill-m3
           - bootstrap
 
 permissions:
@@ -25,7 +26,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       FIREBASE_PROJECT_ID: retocker
       FIREBASE_QUOTES_SITE: ${{ vars.FIREBASE_QUOTES_SITE }}
@@ -60,6 +61,10 @@ jobs:
           if [ "$MODE" = bootstrap ]; then
             export REPLAY_SOURCE_URL=https://retocker.web.app/replay-data/
             node tools/update.mjs --bootstrap
+          elif [ "$MODE" = backfill-m3 ]; then
+            export BACKFILL_M3=true
+            export REPLAY_SOURCE_URL="https://$FIREBASE_QUOTES_SITE.web.app/replay-data/"
+            node oanda-fetch.mjs
           else
             export REPLAY_SOURCE_URL="https://$FIREBASE_QUOTES_SITE.web.app/replay-data/"
             node oanda-fetch.mjs

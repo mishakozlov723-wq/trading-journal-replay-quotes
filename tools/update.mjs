@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INSTRUMENTS, M5_FROM, M3_FROM, M3_LOOKBACK_DAYS, M3_ASSETS, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
+import { INSTRUMENTS, M5_FROM, M3_FROM, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -37,7 +37,7 @@ async function retry(fn, label, wait = pause) {
 export async function updateQuotes({
   sourceURL, out = path.join(root, 'public/replay-data'), now = new Date(),
   fetchImpl = fetch, rates, history, seed, wait = pause, log = console.log, bootstrap = false,
-  sourceLabel = 'Dukascopy BID', cacheDir, supportsM3 = false,
+  sourceLabel = 'Dukascopy BID', cacheDir, supportsM3 = false, backfillM3 = false,
 } = {}) {
   const source = sourceURL ? new URL(sourceURL) : null;
   if (source && (source.protocol !== 'https:' || !source.hostname.endsWith('.web.app') || source.search || source.hash)) {
@@ -47,10 +47,6 @@ export async function updateQuotes({
   // Download only completed UTC days. NY trading days are already closed by the scheduled run.
   const cutoff = Math.floor(now.getTime() / DAY) * DAY;
   if (!Number.isFinite(cutoff)) throw new Error('Invalid update time');
-  const initialM3From = Math.max(
-    Date.parse(M3_FROM + 'T00:00:00Z'),
-    cutoff - M3_LOOKBACK_DAYS * DAY,
-  );
   const runVersion = Date.now().toString();
   const getRemote = async filename => {
     const url = new URL(filename, source); url.searchParams.set('v', runVersion);
@@ -115,17 +111,17 @@ export async function updateQuotes({
   if (!bootstrap) {
   for (const [asset, cfg] of published) {
     const prefix = asset.toLowerCase();
+    const hasM3 = supportsM3 && asset === 'GER40';
     const m5Files = files.filter(file => file.asset === asset && file.year && file.interval === 300);
-    const m3Files = files.filter(file => file.asset === asset && file.year && file.interval === 180);
-    const includeM3 = supportsM3 && M3_ASSETS.has(asset);
+    const m3Files = hasM3 ? files.filter(file => file.asset === asset && file.year && file.interval === 180) : [];
     for (const [timeframe, interval, existing] of [
       ['h1', 3600, rowsByFile.get(prefix + '_h1.bin')],
       ['m5', 300, m5Files.flatMap(file => rowsByFile.get(file.name))],
-      ...(includeM3 ? [['m3', 180, m3Files.length ? m3Files.flatMap(file => rowsByFile.get(file.name)) : []]] : []),
+      ...(hasM3 ? [['m3', 180, m3Files.length ? m3Files.flatMap(file => rowsByFile.get(file.name)) : []]] : []),
     ]) {
-      const from = existing.length
+      const from = existing.length && !(timeframe === 'm3' && backfillM3)
         ? Math.floor((existing.at(-1).timestamp - 7 * DAY) / DAY) * DAY
-        : initialM3From;
+        : Date.parse(M3_FROM + 'T00:00:00Z');
       let downloaded = [];
       if (history) {
         downloaded = await history({ asset, timeframe, existing, from, to: cutoff });
@@ -220,8 +216,9 @@ export async function updateQuotes({
       ...meta.instruments[asset], tier: cfg.tier, h1: summary(rowsByFile.get(prefix + '_h1.bin')),
       m5Years: years, m5First: rowsByFile.get(prefix + '_m5_' + years[0] + '.bin')[0].timestamp / 1000,
       m5Count: years.reduce((n, year) => n + rowsByFile.get(prefix + '_m5_' + year + '.bin').length, 0),
-      ...(includeM3 ? {
-        m3Years, m3First: m3Years.length ? rowsByFile.get(prefix + '_m3_' + m3Years[0] + '.bin')[0].timestamp / 1000 : undefined,
+      ...(hasM3 ? {
+        m3Years,
+        m3First: m3Years.length ? rowsByFile.get(prefix + '_m3_' + m3Years[0] + '.bin')[0].timestamp / 1000 : undefined,
         m3Count: m3Years.reduce((n, year) => n + rowsByFile.get(prefix + '_m3_' + year + '.bin').length, 0),
       } : {}),
     };
@@ -230,9 +227,10 @@ export async function updateQuotes({
   // validated strictly; nothing is published unless all instruments succeed.
   for (const asset of missing) {
     const cfg = INSTRUMENTS[asset], prefix = asset.toLowerCase();
+    const hasM3 = supportsM3 && asset === 'GER40';
     if (!seed) { log(asset, 'not published yet; this source cannot seed history, skipped'); continue; }
-    const fromOf = { h1: Date.parse(cfg.h1From + 'T00:00:00Z'), m5: Date.parse(M5_FROM + 'T00:00:00Z'), m3: initialM3From };
-    for (const [timeframe, interval] of [['h1', 3600], ['m5', 300]]) {
+    const fromOf = { h1: Date.parse(cfg.h1From + 'T00:00:00Z'), m5: Date.parse(M5_FROM + 'T00:00:00Z'), m3: Date.parse(M3_FROM + 'T00:00:00Z') };
+    for (const [timeframe, interval] of [['h1', 3600], ['m5', 300], ...(hasM3 ? [['m3', 180]] : [])]) {
       const from = fromOf[timeframe];
       let rows;
       try { rows = mergeBars([], await seed({ asset, timeframe, from, to: cutoff }), { scale: cfg.scale, interval, from, to: cutoff }); }
@@ -250,11 +248,16 @@ export async function updateQuotes({
       .map(name => Number(name.match(/_(\d{4})\.bin$/)[1])).sort((a, b) => a - b);
     const m3Years = names.filter(name => name.startsWith(prefix + '_m3_'))
       .map(name => Number(name.match(/_(\d{4})\.bin$/)[1])).sort((a, b) => a - b);
-    if (!years.length || !rowsByFile.has(prefix + '_h1.bin')) throw new Error(asset + ' seed is incomplete');
+    if (!years.length || !rowsByFile.has(prefix + '_h1.bin') || (hasM3 && !m3Years.length)) throw new Error(asset + ' seed is incomplete');
     meta.instruments[asset] = {
       scale: cfg.scale, dp: cfg.dp, tier: cfg.tier, h1: summary(rowsByFile.get(prefix + '_h1.bin')),
       m5Years: years, m5First: rowsByFile.get(prefix + '_m5_' + years[0] + '.bin')[0].timestamp / 1000,
       m5Count: years.reduce((n, year) => n + rowsByFile.get(prefix + '_m5_' + year + '.bin').length, 0),
+      ...(hasM3 ? {
+        m3Years,
+        m3First: rowsByFile.get(prefix + '_m3_' + m3Years[0] + '.bin')[0].timestamp / 1000,
+        m3Count: m3Years.reduce((n, year) => n + rowsByFile.get(prefix + '_m3_' + year + '.bin').length, 0),
+      } : {}),
     };
     changed = true;
     log(asset, 'seeded:', meta.instruments[asset].h1.n, 'H1 and', meta.instruments[asset].m5Count, 'M5 candles');

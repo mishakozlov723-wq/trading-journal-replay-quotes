@@ -185,13 +185,7 @@ export function oandaHistory({ token, fetchImpl = fetch, wait = pause, host = PR
     }
     if (!existing.length) {
       if (!incoming.length) throw new Error(label + ': provider returned no candles for initial M3 archive');
-      const stats = {
-        seeded: true,
-        firstUTC: iso(incoming[0].timestamp),
-        lastUTC: iso(incoming.at(-1).timestamp),
-        newBars: incoming.length,
-        lastNewUTC: iso(incoming.at(-1).timestamp),
-      };
+      const stats = { seeded: true, newBars: incoming.length, lastNewUTC: iso(incoming.at(-1).timestamp) };
       report[label] = { ...stats, ...hours };
       log(label, JSON.stringify(report[label]));
       return incoming;
@@ -262,7 +256,7 @@ export function oandaSeed({ token, fetchImpl = fetch, wait = pause, host = PRACT
   };
 }
 
-export function summaryTable(report, dryRun, changed) {
+function summaryTable(report, dryRun, changed) {
   const rows = Object.entries(report).map(([k, v]) => v.seeded
     ? `|${k}|new: ${v.firstUTC.slice(0, 10)} → ${v.lastUTC.slice(0, 10)}|max gap ${v.maxGapHours} h|—|${v.hourMismatch ?? '—'}|${v.newBars}|${v.lastNewUTC}|`
     : `|${k}|${(v.coverage * 100).toFixed(1)}%|${(v.medianRelative * 100).toFixed(3)}%|${(v.sameDirection * 100).toFixed(1)}%|${v.hourMismatch}|${v.newBars}|${v.lastNewUTC ?? '—'}|`);
@@ -283,6 +277,7 @@ async function main() {
     history: oandaHistory({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
     seed: oandaSeed({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
     supportsM3: true,
+    backfillM3: process.env.BACKFILL_M3 === 'true',
   });
   await fs.mkdir('oanda-check', { recursive: true });
   await fs.writeFile('oanda-check/report.json', JSON.stringify({ dryRun, changed: result.changed, limits: LIMITS, series: report }, null, 2));
