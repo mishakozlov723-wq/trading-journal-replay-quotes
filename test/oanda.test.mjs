@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { INSTRUMENTS, writeBars, readBars, sha256, summary } from '../tools/data.mjs';
 import { updateQuotes } from '../tools/update.mjs';
-import { fetchCandles, verifyHours, checkOverlap, checkSeed, oandaHistory, oandaSeed, OANDA_INSTRUMENTS, SOURCE_LABEL } from '../oanda-fetch.mjs';
+import { fetchCandles, verifyHours, checkOverlap, checkSeed, oandaHistory, oandaSeed, summaryTable, OANDA_INSTRUMENTS, SOURCE_LABEL } from '../oanda-fetch.mjs';
 
 const H = 3600000, M = 300000, DAY = 86400000;
 const start = Date.parse('2014-01-06T00:00:00Z'); // Monday
@@ -77,6 +77,18 @@ test('fetchCandles splits long ranges, drops incomplete/out-of-range candles and
   assert.equal(rows.at(-1).timestamp, start + 20 * DAY - M);
   assert.ok(rows.every((b, i) => !i || b.timestamp > rows[i - 1].timestamp));
   assert.equal(calls[0].searchParams.get('price'), 'B');
+});
+
+test('workflow summary renders an initial M3 series', () => {
+  const report = { 'GER40 m3': {
+    seeded: true,
+    firstUTC: '2026-11-01T00:00:00.000Z',
+    lastUTC: '2026-11-17T20:57:00.000Z',
+    newBars: 9029,
+    lastNewUTC: '2026-11-17T20:57:00.000Z',
+    maxGapHours: 2,
+  } };
+  assert.match(summaryTable(report, false, true), /new: 2026-11-01 → 2026-11-17/);
 });
 
 test('token errors fail fast, server errors are retried, wrong responses are rejected', async () => {
