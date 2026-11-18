@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aggregateMinutes } from './oanda-fetch.mjs';
+import { aggregateMinutes } from '../oanda-fetch.mjs';
 
 test('aggregates three one-minute candles into an exact M3 OHLC bar', () => {
   const rows = aggregateMinutes([

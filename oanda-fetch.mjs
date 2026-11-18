@@ -276,6 +276,7 @@ async function main() {
     sourceURL: process.env.REPLAY_SOURCE_URL, out, sourceLabel: SOURCE_LABEL, cacheDir: process.env.QUOTES_CACHE_DIR || undefined,
     history: oandaHistory({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
     seed: oandaSeed({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
+    supportsM3: true,
   });
   await fs.mkdir('oanda-check', { recursive: true });
   await fs.writeFile('oanda-check/report.json', JSON.stringify({ dryRun, changed: result.changed, limits: LIMITS, series: report }, null, 2));
