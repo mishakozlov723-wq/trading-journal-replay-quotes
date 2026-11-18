@@ -16,7 +16,9 @@ export const INSTRUMENTS = {
 };
 export const M5_FROM = '2013-01-01';
 // M3 is derived from verified OANDA M1 candles and keeps the same history start.
-export const M3_FROM = M5_FROM;
+// OANDA M1 is used to build exact M3 candles; seeding from 2013 would exceed the
+// API/workflow window across all nine instruments. M3 replay is available from 2025.
+export const M3_FROM = '2025-01-01';
 export const DAY = 86400000;
 
 export function sha256(buffer) {
