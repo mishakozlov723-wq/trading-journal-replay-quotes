@@ -124,7 +124,7 @@ export async function updateQuotes({
         : Date.parse(M3_FROM + 'T00:00:00Z');
       let downloaded = [];
       if (history) {
-        downloaded = await history({ asset, timeframe, existing, from, to: cutoff });
+        downloaded = await history({ asset, timeframe, existing, from, to: cutoff, backfill: timeframe === 'm3' && backfillM3 });
       } else {
       if (timeframe === 'm3') throw new Error('M3 updates require the OANDA history provider');
       let nativeUnavailable = false;

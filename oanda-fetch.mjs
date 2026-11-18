@@ -162,7 +162,7 @@ export function oandaHistory({ token, fetchImpl = fetch, wait = pause, host = PR
     if (!cache.has(key)) cache.set(key, fetchCandles({ instrument, timeframe, from, to, token, fetchImpl, wait, host }));
     return cache.get(key);
   };
-  return async ({ asset, timeframe, existing, from, to }) => {
+  return async ({ asset, timeframe, existing, from, to, backfill = false }) => {
     const instrument = OANDA_INSTRUMENTS[asset], { scale } = INSTRUMENTS[asset];
     if (!instrument) throw new Error('No OANDA instrument for ' + asset);
     const label = asset + ' ' + timeframe;
@@ -195,8 +195,10 @@ export function oandaHistory({ token, fetchImpl = fetch, wait = pause, host = PR
     const fresh = incoming.filter(b => b.timestamp > last);
     report[label] = { ...stats, ...hours, newBars: fresh.length, lastArchivedUTC: iso(last), lastNewUTC: fresh.length ? iso(fresh.at(-1).timestamp) : null };
     log(label, JSON.stringify(report[label]));
-    // Archived candles stay byte-for-byte; OANDA only extends the series.
-    return [...existing.filter(b => b.timestamp >= from && b.timestamp < to), ...fresh];
+    // Archived candles stay byte-for-byte. Normal updates append to the right;
+    // the one-time M3 backfill may also extend the series to the left.
+    const older = backfill ? incoming.filter(b => b.timestamp < existing[0].timestamp) : [];
+    return [...older, ...existing.filter(b => b.timestamp >= from && b.timestamp < to), ...fresh];
   };
 }
 
