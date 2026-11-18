@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { INSTRUMENTS, M5_FROM, M3_FROM, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
+import { INSTRUMENTS, M5_FROM, M3_FROM, M3_LOOKBACK_DAYS, DAY, readBars, writeBars, mergeBars, summary, sha256, expectedFiles, missingInstruments, validateBar } from './data.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -47,6 +47,10 @@ export async function updateQuotes({
   // Download only completed UTC days. NY trading days are already closed by the scheduled run.
   const cutoff = Math.floor(now.getTime() / DAY) * DAY;
   if (!Number.isFinite(cutoff)) throw new Error('Invalid update time');
+  const initialM3From = Math.max(
+    Date.parse(M3_FROM + 'T00:00:00Z'),
+    cutoff - M3_LOOKBACK_DAYS * DAY,
+  );
   const runVersion = Date.now().toString();
   const getRemote = async filename => {
     const url = new URL(filename, source); url.searchParams.set('v', runVersion);
@@ -120,7 +124,7 @@ export async function updateQuotes({
     ]) {
       const from = existing.length
         ? Math.floor((existing.at(-1).timestamp - 7 * DAY) / DAY) * DAY
-        : Date.parse(M3_FROM + 'T00:00:00Z');
+        : initialM3From;
       let downloaded = [];
       if (history) {
         downloaded = await history({ asset, timeframe, existing, from, to: cutoff });
@@ -226,7 +230,7 @@ export async function updateQuotes({
   for (const asset of missing) {
     const cfg = INSTRUMENTS[asset], prefix = asset.toLowerCase();
     if (!seed) { log(asset, 'not published yet; this source cannot seed history, skipped'); continue; }
-    const fromOf = { h1: Date.parse(cfg.h1From + 'T00:00:00Z'), m5: Date.parse(M5_FROM + 'T00:00:00Z'), m3: Date.parse(M3_FROM + 'T00:00:00Z') };
+    const fromOf = { h1: Date.parse(cfg.h1From + 'T00:00:00Z'), m5: Date.parse(M5_FROM + 'T00:00:00Z'), m3: initialM3From };
     for (const [timeframe, interval] of [['h1', 3600], ['m5', 300], ...(supportsM3 ? [['m3', 180]] : [])]) {
       const from = fromOf[timeframe];
       let rows;

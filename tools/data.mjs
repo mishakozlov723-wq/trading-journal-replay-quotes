@@ -15,10 +15,11 @@ export const INSTRUMENTS = {
   USDCHF: { scale: 100000, dp: 5, tier: 2, h1From: '2005-01-01' },
 };
 export const M5_FROM = '2013-01-01';
-// M3 is derived from verified OANDA M1 candles and keeps the same history start.
-// OANDA M1 is used to build exact M3 candles; seeding from 2013 would exceed the
-// API/workflow window across all nine instruments. M3 replay is available from 2025.
+// M3 is derived from verified OANDA M1 candles. Existing H1/M5 history stays
+// unchanged; the first M3 backfill is limited to a recent window so the
+// initial publication fits OANDA's request and workflow limits.
 export const M3_FROM = '2025-01-01';
+export const M3_LOOKBACK_DAYS = 90;
 export const DAY = 86400000;
 
 export function sha256(buffer) {
