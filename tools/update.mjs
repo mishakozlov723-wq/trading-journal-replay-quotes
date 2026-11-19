@@ -37,7 +37,7 @@ async function retry(fn, label, wait = pause) {
 export async function updateQuotes({
   sourceURL, out = path.join(root, 'public/replay-data'), now = new Date(),
   fetchImpl = fetch, rates, history, seed, wait = pause, log = console.log, bootstrap = false,
-  sourceLabel = 'Dukascopy BID', cacheDir, supportsM3 = false, backfillM3 = false,
+  sourceLabel = 'Dukascopy BID', cacheDir, supportsM3 = false, backfillM3 = false, replaceGer40,
 } = {}) {
   const source = sourceURL ? new URL(sourceURL) : null;
   if (source && (source.protocol !== 'https:' || !source.hostname.endsWith('.web.app') || source.search || source.hash)) {
@@ -106,9 +106,21 @@ export async function updateQuotes({
       throw new Error('M5 metadata disagrees with candles for ' + asset);
     }
   }
-  if (!bootstrap && !rates && !history) ({ getHistoricalRates: rates } = await import('dukascopy-node'));
-  let changed = false;
-  if (!bootstrap) {
+  if (replaceGer40) {
+    // Restore and authenticate the entire snapshot before replacing only the GER40 base series.
+    if (!meta.files || Object.keys(meta.files).length !== buffers.size || [...buffers.keys()].some(n => !meta.files[n]?.sha256)) throw Error('Incomplete source manifest');
+    const archived = files.filter(f => f.asset === 'GER40' && f.interval === 180).flatMap(f => rowsByFile.get(f.name));
+    const {h1,m5} = await replaceGer40({to:cutoff, archived});
+    const save = (name,rows,sec) => { buffers.set(name,writeBars(rows,INSTRUMENTS.GER40.scale,sec)); rowsByFile.set(name,rows); };
+    for (const f of files.filter(f => f.asset === 'GER40' && f.interval === 300)) { buffers.delete(f.name); rowsByFile.delete(f.name); }
+    save('ger40_h1.bin',h1,3600);
+    const years = Map.groupBy(m5,b => new Date(b.timestamp).getUTCFullYear());
+    for (const [year,rows] of years) save(`ger40_m5_${year}.bin`,rows,300);
+    Object.assign(meta.instruments.GER40,{source:'OANDA BID',h1:summary(h1),m5Years:[...years.keys()],m5First:m5[0].timestamp/1000,m5Count:m5.length});
+  }
+  if (!replaceGer40 && !bootstrap && !rates && !history) ({ getHistoricalRates: rates } = await import('dukascopy-node'));
+  let changed = !!replaceGer40;
+  if (!bootstrap && !replaceGer40) {
   for (const [asset, cfg] of published) {
     const prefix = asset.toLowerCase();
     const hasM3 = supportsM3 && asset === 'GER40';
@@ -269,7 +281,7 @@ export async function updateQuotes({
   if (!changed && !bootstrap) { log('No new candles or corrections; publication skipped.'); return { changed: false, meta }; }
   if (!bootstrap) {
     meta.generated = now.toISOString();
-    meta.checkedThroughUTC = new Date(cutoff - DAY).toISOString().slice(0, 10);
+    if (!replaceGer40) meta.checkedThroughUTC = new Date(cutoff - DAY).toISOString().slice(0, 10);
   }
   meta.source = sourceLabel;
   meta.files = Object.fromEntries([...buffers].map(([filename, buffer]) => [filename, {

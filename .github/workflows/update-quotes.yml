@@ -8,11 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'update = fresh candles; backfill-m3 = rebuild GER40 M3 from 2021; bootstrap = first release only'
+        description: 'GER40: check-ger40-2020 verifies only; replace-ger40-2020 publishes. Routine daily mode: update.'
         type: choice
         default: update
         options:
           - update
+          - check-ger40-2020
+          - replace-ger40-2020
           - backfill-m3
           - bootstrap
 
@@ -56,11 +58,21 @@ jobs:
         env:
           OANDA_API_TOKEN: ${{ secrets.OANDA_API_TOKEN }}
           MODE: ${{ inputs.mode || 'update' }}
+          NODE_OPTIONS: --max-old-space-size=5120
           QUOTES_CACHE_DIR: ${{ github.workspace }}/.quotes-cache
         run: |
           if [ "$MODE" = bootstrap ]; then
             export REPLAY_SOURCE_URL=https://retocker.web.app/replay-data/
             node tools/update.mjs --bootstrap
+          elif [ "$MODE" = check-ger40-2020 ] || [ "$MODE" = replace-ger40-2020 ]; then
+            export REPLAY_SOURCE_URL="https://$FIREBASE_QUOTES_SITE.web.app/replay-data/"
+            if [ "$MODE" = check-ger40-2020 ]; then
+              node oanda-fetch.mjs --replace-ger40 --dry-run
+              node tools/audit.mjs oanda-check/replay-data
+            else
+              node oanda-fetch.mjs --replace-ger40
+              node tools/audit.mjs public/replay-data
+            fi
           elif [ "$MODE" = backfill-m3 ]; then
             export BACKFILL_M3=true
             export REPLAY_SOURCE_URL="https://$FIREBASE_QUOTES_SITE.web.app/replay-data/"
