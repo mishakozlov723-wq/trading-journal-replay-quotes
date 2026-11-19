@@ -33,6 +33,19 @@ async function seed(t, { checksums = false } = {}) {
   return { root, out, buffers, meta };
 }
 
+test('replacement preserves M3 and every other instrument on disk; verifies the new manifest',async t=>{
+  const {out,buffers,meta}=await seed(t,{checksums:true});
+  const bar=candle(stamp('2021-01-04T08:00:00')),name='ger40_m3_2021.bin',bytes=writeBars([bar],INSTRUMENTS.GER40.scale,180);
+  Object.assign(meta.instruments.GER40,{m3Years:[2021],m3Count:1,m3First:bar.timestamp/1000});
+  meta.files[name]={...summary([bar]),bytes:bytes.length,sha256:sha256(bytes)};
+  await fs.writeFile(path.join(out,name),bytes);await fs.writeFile(path.join(out,'meta.json'),JSON.stringify(meta));
+  const {meta:next}=await updateQuotes({out,replaceGer40:async({archived})=>{assert.deepEqual(archived,[bar]);return {h1:[bar],m5:[bar]};}});
+  assert.deepEqual(next.instruments.GER40.m5Years,[2021]);assert.deepEqual(await fs.readFile(path.join(out,name)),bytes);
+  assert.equal(next.files['ger40_m5_2013.bin'],undefined);await assert.rejects(fs.access(path.join(out,'ger40_m5_2013.bin')),{code:'ENOENT'});
+  for(const [file,buf] of buffers) if(file!=='meta.json'&&!file.startsWith('ger40_')) assert.deepEqual(await fs.readFile(path.join(out,file)),buf);
+  const {audit}=await import('../tools/audit.mjs');await audit(out);await fs.writeFile(path.join(out,name),Buffer.alloc(bytes.length));await assert.rejects(audit(out),/checksum/);
+});
+
 function provider({ append = true, incomplete = false, failAsset } = {}) {
   return async ({ instrument, timeframe, dates }) => {
     if (instrument === failAsset) throw new Error('Provider unavailable');

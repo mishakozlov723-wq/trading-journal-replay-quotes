@@ -278,6 +278,7 @@ async function main() {
     sourceURL: process.env.REPLAY_SOURCE_URL, out, sourceLabel: SOURCE_LABEL, cacheDir: process.env.QUOTES_CACHE_DIR || undefined,
     history: oandaHistory({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
     seed: oandaSeed({ token, report, host: process.env.OANDA_HOST || PRACTICE_HOST }),
+    replaceGer40: process.argv.includes('--replace-ger40') ? async options => (await import('./ger40-history.mjs')).buildGer40({...options,token}) : undefined,
     supportsM3: true,
     backfillM3: process.env.BACKFILL_M3 === 'true',
   });
